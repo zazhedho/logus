@@ -1,3 +1,7 @@
+// Package logus is a small structured logging module built on log/slog. Each
+// line carries the server IP, node name, caller location, a log id and an
+// optional user id. It recognizes gin-style contexts through duck typing and
+// has no web framework dependency.
 package logus
 
 import (
@@ -13,6 +17,10 @@ import (
 	"sync"
 )
 
+// Log levels. Lower numbers are more severe. A call is written only when the
+// LOG_LEVEL environment variable, read as an integer, is greater than or equal
+// to the call's level; for example LOG_LEVEL=3 writes Panic, Error, Fail and
+// Info but drops Data, Warn and Debug.
 const (
 	LogLevelPanic = 0
 	LogLevelError = 1
@@ -42,7 +50,9 @@ type logIDContextKey struct{}
 type userIDContextKey struct{}
 
 // WriteLog writes a log line at the given level. When LOG_LEVEL is unset the
-// threshold is LogLevelWarn.
+// threshold is LogLevelWarn. It logs with context.Background(), so the line
+// still carries a log_id: a freshly generated id per call, since none is
+// stored.
 func WriteLog(level int, msg ...any) {
 	writeLog(context.Background(), 5, level, msg...)
 }
@@ -95,10 +105,8 @@ func writeLog(ctx context.Context, defaultLogLevel, level int, msg ...any) {
 
 		userID := interfaceString(ctx.Value(userIDContextKey{}))
 		if userID == "" {
-			if getter, ok := ctx.(interface{ Get(string) (any, bool) }); ok {
-				if value, exists := getter.Get(CtxKeyUserID); exists {
-					userID = interfaceString(value)
-				}
+			if value, exists := ctxGet(ctx, CtxKeyUserID); exists {
+				userID = interfaceString(value)
 			}
 		}
 		if userID != "" {

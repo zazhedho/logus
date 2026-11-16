@@ -129,3 +129,33 @@ func TestRequestIDTreatsStoredNilUUIDAsMissing(t *testing.T) {
 		}
 	})
 }
+
+func TestRequestIDStoresGeneratedIDOnAnyKeyContext(t *testing.T) {
+	f := newFakeAnyKeyContext()
+	got := RequestID(f)
+	if got == uuid.Nil {
+		t.Fatal("expected generated id")
+	}
+	if v, _ := f.Get(CtxKeyID); v != got {
+		t.Fatalf("stored %v, want %v", v, got)
+	}
+	if again := RequestID(f); again != got {
+		t.Fatalf("not stable: %v vs %v", again, got)
+	}
+}
+
+func TestRequestIDReadsFromAnyKeyContext(t *testing.T) {
+	a := uuid.New()
+	f := newFakeAnyKeyContext()
+	f.Set(CtxKeyID, a)
+	if got := RequestID(f); got != a {
+		t.Fatalf("uuid value: got %v, want %v", got, a)
+	}
+
+	b := uuid.New()
+	g := newFakeAnyKeyContext()
+	g.Set(CtxKeyID, b.String())
+	if got := RequestID(g); got != b {
+		t.Fatalf("string value: got %v, want %v", got, b)
+	}
+}

@@ -28,6 +28,28 @@ func (f *fakeGinContext) Set(key string, value any) {
 	f.values[key] = value
 }
 
+// fakeAnyKeyContext mimics the Get/Set surface of *gin.Context from gin v1.11
+// (any-typed keys) without importing gin. Its Value method is inherited from
+// the embedded context and never consults the map, so tests exercise the
+// Get/Set path rather than the ctx.Value fallback.
+type fakeAnyKeyContext struct {
+	context.Context
+	values map[any]any
+}
+
+func newFakeAnyKeyContext() *fakeAnyKeyContext {
+	return &fakeAnyKeyContext{Context: context.Background(), values: map[any]any{}}
+}
+
+func (f *fakeAnyKeyContext) Get(key any) (any, bool) {
+	v, ok := f.values[key]
+	return v, ok
+}
+
+func (f *fakeAnyKeyContext) Set(key any, value any) {
+	f.values[key] = value
+}
+
 // captureLogs swaps the package logger for newLogger(&buf, format) for the
 // duration of the test and restores it via t.Cleanup.
 func captureLogs(t *testing.T, format string) *bytes.Buffer {

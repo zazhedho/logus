@@ -204,6 +204,22 @@ func TestUserIDFromGetter(t *testing.T) {
 	}
 }
 
+func TestUserIDFromAnyKeyContext(t *testing.T) {
+	buf := captureLogs(t, "json")
+	t.Setenv("LOG_LEVEL", "6")
+	f := newFakeAnyKeyContext()
+	f.Set(CtxKeyUserID, "user-9")
+	WriteLogWithContext(f, LogLevelInfo, "x")
+	m := lastJSONLine(t, buf)
+	if m["user_id"] != "user-9" {
+		t.Fatalf("user_id = %v", m["user_id"])
+	}
+	stored, _ := f.Get(CtxKeyID)
+	if m["log_id"] != fmt.Sprint(stored) || m["log_id"] == "" {
+		t.Fatalf("log_id = %v, stored = %v", m["log_id"], stored)
+	}
+}
+
 func TestNoUserIDFieldWhenAbsent(t *testing.T) {
 	buf := captureLogs(t, "json")
 	t.Setenv("LOG_LEVEL", "6")
@@ -249,7 +265,7 @@ func TestWithLogMetadata(t *testing.T) {
 func TestNewLoggerSelectsFormat(t *testing.T) {
 	emit := func(format string) string {
 		var buf bytes.Buffer
-		newLogger(&buf, normalizeKey(format)).Info("hello")
+		newLogger(&buf, format).Info("hello")
 		return strings.TrimSpace(buf.String())
 	}
 	datePrefix := regexp.MustCompile(`^\d{4}/\d{2}/\d{2} `)
