@@ -110,3 +110,22 @@ func TestRequestIDNilContext(t *testing.T) {
 		t.Fatal("expected generated id")
 	}
 }
+
+func TestRequestIDTreatsStoredNilUUIDAsMissing(t *testing.T) {
+	t.Run("typed context value", func(t *testing.T) {
+		if got := RequestID(WithRequestID(context.Background(), uuid.Nil)); got == uuid.Nil {
+			t.Fatal("expected generated id")
+		}
+	})
+	t.Run("getter value", func(t *testing.T) {
+		f := newFakeGinContext()
+		f.Set(CtxKeyID, uuid.Nil)
+		got := RequestID(f)
+		if got == uuid.Nil {
+			t.Fatal("expected generated id")
+		}
+		if v, _ := f.Get(CtxKeyID); v != got {
+			t.Fatalf("stored %v, want %v", v, got)
+		}
+	})
+}
