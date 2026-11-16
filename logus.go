@@ -118,12 +118,19 @@ func writeLog(ctx context.Context, defaultLogLevel, level int, msg ...any) {
 	logger.Log(logCtx, mapLevelToSlog(level), fmt.Sprint(msg...), fields...)
 }
 
-// newLogger builds a logger writing to w. Only the JSON format exists for now;
-// every format value yields the JSON handler.
+// newLogger builds a logger writing to w. The normalized format "text" selects
+// slog's text handler, "string" the compact bracketed line handler, and any
+// other value the JSON handler.
 func newLogger(w io.Writer, format string) *slog.Logger {
-	_ = format
 	options := &slog.HandlerOptions{Level: slog.LevelDebug}
-	return slog.New(slog.NewJSONHandler(w, options))
+	switch normalizeKey(format) {
+	case "text":
+		return slog.New(slog.NewTextHandler(w, options))
+	case "string":
+		return slog.New(newStringHandler(w, options.Level))
+	default:
+		return slog.New(slog.NewJSONHandler(w, options))
+	}
 }
 
 func getLogger() *slog.Logger {
