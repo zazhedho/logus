@@ -6,15 +6,10 @@ package logus
 
 import (
 	"context"
-	"fmt"
-	"io"
-	"log/slog"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strconv"
-	"strings"
-	"sync"
+
+	"github.com/google/uuid"
+
+	"github.com/zazhedho/logus/internal/core"
 )
 
 // Log levels. Lower numbers are more severe. A call is written only when the
@@ -31,163 +26,54 @@ const (
 	LogLevelDebug = 6
 )
 
-var logLevelMap = map[int]string{
-	LogLevelPanic: "PANIC",
-	LogLevelError: "ERROR",
-	LogLevelFail:  "FAIL ",
-	LogLevelInfo:  "INFO ",
-	LogLevelData:  "DATA ",
-	LogLevelDebug: "DEBUG",
-	LogLevelWarn:  "WARN ",
-}
-
-var (
-	loggerOnce sync.Once
-	appLogger  *slog.Logger
+const (
+	// CtxKeyID is the gin-style context key under which the request id is stored.
+	CtxKeyID = "CTX_ID"
+	// CtxKeyUserID is the gin-style context key under which the user id is stored.
+	CtxKeyUserID = "userId"
 )
-
-type logIDContextKey struct{}
-type userIDContextKey struct{}
 
 // WriteLog writes a log line at the given level. When LOG_LEVEL is unset the
 // threshold is LogLevelWarn. It logs with context.Background(), so the line
 // still carries a log_id: a freshly generated id per call, since none is
 // stored.
 func WriteLog(level int, msg ...any) {
-	writeLog(context.Background(), 5, level, msg...)
+	// core.Log must be called directly from here: its caller-depth
+	// assumes exactly one layer between it and the user's code.
+	core.Log(context.Background(), core.LevelWarn, level, msg...)
 }
 
 // WriteLogWithContext writes a log line enriched with the log id and user id
 // found in ctx. When LOG_LEVEL is unset the threshold is LogLevelDebug.
 func WriteLogWithContext(ctx context.Context, level int, msg ...any) {
-	writeLog(ctx, 6, level, msg...)
+	// See WriteLog: keep this a direct call.
+	core.Log(ctx, core.LevelDebug, level, msg...)
 }
 
 // WithLogMetadata returns a copy of ctx carrying an explicit log id and user
 // id. Empty values do not overwrite existing ones.
 func WithLogMetadata(ctx context.Context, logID, userID string) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if logID != "" {
-		ctx = context.WithValue(ctx, logIDContextKey{}, logID)
-	}
-	if userID != "" {
-		ctx = context.WithValue(ctx, userIDContextKey{}, userID)
-	}
-	return ctx
+	return core.WithLogMetadata(ctx, logID, userID)
 }
 
-func writeLog(ctx context.Context, defaultLogLevel, level int, msg ...any) {
-	if _, ok := logLevelMap[level]; !ok {
-		return
-	}
-
-	if logLevel, _ := strconv.Atoi(getEnv("LOG_LEVEL", strconv.Itoa(defaultLogLevel))); logLevel < level {
-		return
-	}
-
-	logger := getLogger()
-	attrs := []slog.Attr{
-		slog.String("server_ip", getEnv("ServerIP", "")),
-	}
-	attrs = append(attrs, callerAttrs(3)...)
-	if node := getEnv("NODE", ""); node != "" {
-		attrs = append(attrs, slog.String("node", node))
-	}
-
-	if ctx != nil {
-		logID := interfaceString(ctx.Value(logIDContextKey{}))
-		if logID == "" {
-			logID = RequestID(ctx).String()
-		}
-		attrs = append(attrs, slog.String("log_id", logID))
-
-		userID := interfaceString(ctx.Value(userIDContextKey{}))
-		if userID == "" {
-			if value, exists := ctxGet(ctx, CtxKeyUserID); exists {
-				userID = interfaceString(value)
-			}
-		}
-		if userID != "" {
-			attrs = append(attrs, slog.String("user_id", userID))
-		}
-	}
-
-	logCtx := ctx
-	if logCtx == nil {
-		logCtx = context.Background()
-	}
-	fields := make([]any, 0, len(attrs))
-	for _, attr := range attrs {
-		fields = append(fields, attr)
-	}
-
-	logger.Log(logCtx, mapLevelToSlog(level), fmt.Sprint(msg...), fields...)
+// WithRequestID returns a copy of ctx carrying id. A nil ctx is treated as
+// context.Background().
+func WithRequestID(ctx context.Context, id uuid.UUID) context.Context {
+	return core.WithRequestID(ctx, id)
 }
 
-// newLogger builds a logger writing to w. The normalized format "text" selects
-// slog's text handler, "string" the compact bracketed line handler, and any
-// other value the JSON handler.
-func newLogger(w io.Writer, format string) *slog.Logger {
-	options := &slog.HandlerOptions{Level: slog.LevelDebug}
-	switch normalizeKey(format) {
-	case "text":
-		return slog.New(slog.NewTextHandler(w, options))
-	case "string":
-		return slog.New(newStringHandler(w, options.Level))
-	default:
-		return slog.New(slog.NewJSONHandler(w, options))
-	}
+// RequestIDFromContext returns the request id stored by WithRequestID.
+func RequestIDFromContext(ctx context.Context) (uuid.UUID, bool) {
+	return core.RequestIDFromContext(ctx)
 }
 
-func getLogger() *slog.Logger {
-	loggerOnce.Do(func() {
-		appLogger = newLogger(os.Stdout, normalizeKey(getEnv("LOG_FORMAT", "json")))
-	})
-
-	return appLogger
-}
-
-func mapLevelToSlog(level int) slog.Level {
-	switch level {
-	case LogLevelPanic, LogLevelError:
-		return slog.LevelError
-	case LogLevelWarn:
-		return slog.LevelWarn
-	case LogLevelDebug:
-		return slog.LevelDebug
-	default:
-		return slog.LevelInfo
-	}
-}
-
-func callerAttrs(skip int) []slog.Attr {
-	pc, file, line, ok := runtime.Caller(skip)
-	if !ok {
-		return nil
-	}
-
-	sourceFile := normalizeSourceFile(file)
-	sourceFunction := ""
-	if fn := runtime.FuncForPC(pc); fn != nil {
-		sourceFunction = fn.Name()
-	}
-
-	return []slog.Attr{
-		slog.String("source_file", sourceFile),
-		slog.Int("source_line", line),
-		slog.String("source_function", sourceFunction),
-	}
-}
-
-func normalizeSourceFile(file string) string {
-	wd, err := os.Getwd()
-	if err == nil {
-		if rel, relErr := filepath.Rel(wd, file); relErr == nil && rel != "" && !strings.HasPrefix(rel, "..") {
-			return filepath.ToSlash(rel)
-		}
-	}
-
-	return filepath.ToSlash(file)
+// RequestID resolves the request id for ctx. It looks, in order, at the typed
+// value set by WithRequestID, a Get method keyed by CtxKeyID, and a plain
+// string context key CtxKeyID. Get may have the signature Get(string) (any,
+// bool) or Get(any) (any, bool), the latter being *gin.Context in gin v1.11
+// and later. Values may be a uuid.UUID or a parsable string. When nothing
+// valid is found a new id is generated and, if ctx has a Set(string, any) or
+// Set(any, any) method, stored under CtxKeyID.
+func RequestID(ctx context.Context) uuid.UUID {
+	return core.RequestID(ctx)
 }

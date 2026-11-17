@@ -1,4 +1,4 @@
-package logus
+package core
 
 import (
 	"context"

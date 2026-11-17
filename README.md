@@ -88,3 +88,9 @@ The user id and source segments are omitted when empty. The log id segment is pr
 - Contexts exposing either `Get(string)`/`Set(string, any)` or `Get(any)`/`Set(any, any)` (the latter is `*gin.Context` in current gin) are recognized without importing gin, using the keys `CTX_ID` for the request id and `userId` for the user id.
 - `log_id` is always written for non-nil contexts, including `WriteLog` (which uses `context.Background()`). When no log id or request id is stored, a new id is generated per call, so consecutive `WriteLog` lines get different ids.
 - A stored request id equal to the nil UUID is treated as missing and replaced with a newly generated id.
+
+## Layout
+
+The repository root holds only the public API (`logus.go`) and its tests. The
+implementation lives under `internal/core` and is not importable by other
+modules.

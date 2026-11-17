@@ -1,4 +1,4 @@
-package logus
+package core
 
 import (
 	"context"
@@ -6,10 +6,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// Gin-style context keys. The public logus package mirrors these values as
+// CtxKeyID and CtxKeyUserID.
 const (
-	// CtxKeyID is the gin-style context key under which the request id is stored.
-	CtxKeyID = "CTX_ID"
-	// CtxKeyUserID is the gin-style context key under which the user id is stored.
+	CtxKeyID     = "CTX_ID"
 	CtxKeyUserID = "userId"
 )
 
