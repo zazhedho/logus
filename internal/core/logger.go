@@ -12,9 +12,8 @@ var (
 	appLogger  *slog.Logger
 )
 
-// newLogger builds a logger writing to w. The normalized format "text" selects
-// slog's text handler, "string" the compact bracketed line handler, and any
-// other value the JSON handler.
+// // newLogger writes to w: "text" selects slog's text handler, "string" the
+// // compact line handler, anything else JSON.
 func newLogger(w io.Writer, format string) *slog.Logger {
 	options := &slog.HandlerOptions{Level: &levelVar, ReplaceAttr: replaceLevelAttr}
 	switch normalizeKey(format) {

@@ -15,10 +15,8 @@ import (
 type logIDContextKey struct{}
 type userIDContextKey struct{}
 
-// callerSkip is the runtime.Caller depth, counted from callerAttrs, of the
-// user code calling the public logus.WriteLog or logus.WriteLogWithContext:
-// callerAttrs (0), Log (1), the public logus function (2), the caller (3).
-// Every public entry point must call Log directly.
+// callerSkip counts frames from callerAttrs to the user code: callerAttrs,
+// Log, the public logus function, the caller. Public entry points must call Log directly.
 const callerSkip = 3
 
 // WithLogMetadata returns a copy of ctx carrying an explicit log id and user
@@ -36,10 +34,8 @@ func WithLogMetadata(ctx context.Context, logID, userID string) context.Context 
 	return ctx
 }
 
-// Log writes one log line when level is at or above the threshold. Levels
-// that are not one of the six standard ones are ignored. It must be called
-// directly by the public logus function so the reported source location is
-// that function's caller.
+// Log writes one line when level is at or above the threshold; unknown levels
+// are ignored. Call it directly from the public function (see callerSkip).
 func Log(ctx context.Context, level Level, msg ...any) {
 	if !level.valid() {
 		return

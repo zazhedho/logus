@@ -21,9 +21,8 @@ import (
 	"github.com/zazhedho/logus/internal/core"
 )
 
-// logFile receives the process-wide logger's output. The logger binds to
-// os.Stdout and reads LOG_FORMAT only once, so TestMain redirects stdout to
-// this file and forces JSON before the logger is first created.
+// // logFile receives the process-wide logger's output: TestMain redirects stdout
+// // and forces JSON before the logger (bound to os.Stdout, LOG_FORMAT read once) is created.
 var logFile *os.File
 
 func TestMain(m *testing.M) {
@@ -76,10 +75,8 @@ func (f *fakeGinContext) Set(key string, value any) {
 	f.values[key] = value
 }
 
-// fakeAnyKeyContext mimics the Get/Set surface of *gin.Context from gin v1.11
-// (any-typed keys) without importing gin. Its Value method is inherited from
-// the embedded context and never consults the map, so tests exercise the
-// Get/Set path rather than the ctx.Value fallback.
+// fakeAnyKeyContext mimics *gin.Context (gin v1.11, any-typed keys) without gin;
+// Value ignores the map, so tests exercise the Get/Set path.
 type fakeAnyKeyContext struct {
 	context.Context
 	values map[any]any
@@ -500,9 +497,8 @@ func TestRequestIDReadsFromAnyKeyContext(t *testing.T) {
 	}
 }
 
-// helperEnv selects a child-process mode. LOG_LEVEL and LOG_FORMAT are read
-// once per process, so tests that depend on their initial value re-run the
-// test binary as a child and inspect what it writes to stdout.
+// // helperEnv selects a child-process mode: LOG_LEVEL and LOG_FORMAT are read once
+// // per process, so such tests re-run the binary and inspect its stdout.
 const helperEnv = "LOGUS_TEST_HELPER"
 
 type levelCase struct {

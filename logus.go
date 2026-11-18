@@ -1,7 +1,6 @@
-// Package logus is a small structured logging module built on log/slog. Each
-// line carries the server IP, node name, caller location, a log id and an
-// optional user id. It recognizes gin-style contexts through duck typing and
-// has no web framework dependency.
+// Package logus is structured logging on log/slog: each line carries server
+// IP, node name, caller, log id and optional user id. gin contexts are
+// recognized by duck typing; no web framework dependency.
 package logus
 
 import (
@@ -15,9 +14,8 @@ import (
 // Level is a log severity. The values are aligned with log/slog.
 type Level int
 
-// The six standard levels, ordered trace < debug < info < warn < error <
-// fatal. A call is written when its level is at or above the configured
-// threshold (LOG_LEVEL, or SetLevel).
+// // The six standard levels, trace < debug < info < warn < error < fatal; calls
+// // below the threshold (LOG_LEVEL or SetLevel) are dropped.
 const (
 	// LogLevelTrace is the finest-grained tracing, normally off.
 	LogLevelTrace Level = -8
@@ -58,10 +56,8 @@ func GetLevel() Level {
 	return Level(core.GetLevel())
 }
 
-// WriteLog writes a log line at the given level when it is at or above the
-// threshold (default info). It logs with context.Background(), so the line
-// still carries a log_id: a freshly generated id per call, since none is
-// stored. Levels other than the six standard ones are ignored.
+// WriteLog logs at level with context.Background(), so log_id is freshly
+// generated per call. Levels outside the six standard ones are ignored.
 func WriteLog(level Level, msg ...any) {
 	// core.Log must be called directly from here: its caller-depth
 	// assumes exactly one layer between it and the user's code.
@@ -93,13 +89,8 @@ func RequestIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 	return core.RequestIDFromContext(ctx)
 }
 
-// RequestID resolves the request id for ctx. It looks, in order, at the typed
-// value set by WithRequestID, a Get method keyed by CtxKeyID, and a plain
-// string context key CtxKeyID. Get may have the signature Get(string) (any,
-// bool) or Get(any) (any, bool), the latter being *gin.Context in gin v1.11
-// and later. Values may be a uuid.UUID or a parsable string. When nothing
-// valid is found a new id is generated and, if ctx has a Set(string, any) or
-// Set(any, any) method, stored under CtxKeyID.
+// RequestID returns the request id carried by ctx, or a newly generated one
+// (stored via ctx.Set when available). It reads WithRequestID or gin-style CtxKeyID.
 func RequestID(ctx context.Context) uuid.UUID {
 	return core.RequestID(ctx)
 }

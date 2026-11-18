@@ -71,13 +71,9 @@ func RequestIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 	return id, true
 }
 
-// RequestID resolves the request id for ctx. It looks, in order, at the typed
-// value set by WithRequestID, a Get method keyed by CtxKeyID, and a plain
-// string context key CtxKeyID. Get may have the signature Get(string) (any,
-// bool) or Get(any) (any, bool), the latter being *gin.Context in gin v1.11
-// and later. Values may be a uuid.UUID or a parsable string. When nothing
-// valid is found a new id is generated and, if ctx has a Set(string, any) or
-// Set(any, any) method, stored under CtxKeyID.
+// RequestID resolves the id from WithRequestID, a Get method or a string key
+// CtxKeyID (uuid.UUID or parsable string). Otherwise it generates one and
+// stores it via ctx.Set when available.
 func RequestID(ctx context.Context) uuid.UUID {
 	if ctx == nil {
 		return newRequestID()

@@ -58,9 +58,8 @@ var (
 	levelOnce sync.Once
 )
 
-// parseLevel interprets a LOG_LEVEL value: a level name (case-insensitive,
-// surrounding spaces ignored) or a legacy v0.1.x number (0-1 error, 2-5 info,
-// 6 debug). ok is false for anything else, in which case the level is info.
+// // parseLevel parses a LOG_LEVEL name (case-insensitive) or legacy v0.1.x number
+// // (0-1 error, 2-5 info, 6 debug); ok is false otherwise and the level is info.
 func parseLevel(v string) (level Level, ok bool) {
 	switch normalizeKey(v) {
 	case "trace":
