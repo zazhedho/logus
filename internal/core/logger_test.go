@@ -49,7 +49,6 @@ func TestNewLoggerSelectsFormat(t *testing.T) {
 func TestConcurrentWritesProduceWholeLines(t *testing.T) {
 	for _, format := range []string{"json", "string"} {
 		t.Run(format, func(t *testing.T) {
-			t.Setenv("LOG_LEVEL", "6")
 			buf := captureLogs(t, format)
 			var wg sync.WaitGroup
 			for g := 0; g < 50; g++ {
@@ -57,7 +56,7 @@ func TestConcurrentWritesProduceWholeLines(t *testing.T) {
 				go func() {
 					defer wg.Done()
 					for i := 0; i < 20; i++ {
-						Log(context.Background(), 6, LevelInfo, "complete-message")
+						Log(context.Background(), LevelInfo, "complete-message")
 					}
 				}()
 			}

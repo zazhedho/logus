@@ -42,7 +42,7 @@ func (h *stringHandler) Handle(_ context.Context, record slog.Record) error {
 		return true
 	})
 
-	level := strings.ToUpper(record.Level.String())
+	level := Level(record.Level).String()
 	prefix := fmt.Sprintf("[%s][%s][%s]", fields["server_ip"], fields["node"], level)
 	if logID := fields["log_id"]; logID != "" {
 		prefix += fmt.Sprintf("[%s]", logID)

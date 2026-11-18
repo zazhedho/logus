@@ -16,12 +16,12 @@ var (
 // slog's text handler, "string" the compact bracketed line handler, and any
 // other value the JSON handler.
 func newLogger(w io.Writer, format string) *slog.Logger {
-	options := &slog.HandlerOptions{Level: slog.LevelDebug}
+	options := &slog.HandlerOptions{Level: &levelVar, ReplaceAttr: replaceLevelAttr}
 	switch normalizeKey(format) {
 	case "text":
 		return slog.New(slog.NewTextHandler(w, options))
 	case "string":
-		return slog.New(newStringHandler(w, options.Level))
+		return slog.New(newStringHandler(w, &levelVar))
 	default:
 		return slog.New(slog.NewJSONHandler(w, options))
 	}

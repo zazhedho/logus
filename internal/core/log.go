@@ -9,31 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 )
-
-// Log levels. Lower numbers are more severe. The public logus package mirrors
-// these values as its LogLevel constants.
-const (
-	LevelPanic = 0
-	LevelError = 1
-	LevelFail  = 2
-	LevelInfo  = 3
-	LevelData  = 4
-	LevelWarn  = 5
-	LevelDebug = 6
-)
-
-var logLevelMap = map[int]string{
-	LevelPanic: "PANIC",
-	LevelError: "ERROR",
-	LevelFail:  "FAIL ",
-	LevelInfo:  "INFO ",
-	LevelData:  "DATA ",
-	LevelDebug: "DEBUG",
-	LevelWarn:  "WARN ",
-}
 
 type logIDContextKey struct{}
 type userIDContextKey struct{}
@@ -59,19 +36,21 @@ func WithLogMetadata(ctx context.Context, logID, userID string) context.Context 
 	return ctx
 }
 
-// Log writes one log line. defaultLogLevel is the threshold used when
-// LOG_LEVEL is unset. It must be called directly by the public logus
-// function so the reported source location is that function's caller.
-func Log(ctx context.Context, defaultLogLevel, level int, msg ...any) {
-	if _, ok := logLevelMap[level]; !ok {
-		return
-	}
-
-	if logLevel, _ := strconv.Atoi(getEnv("LOG_LEVEL", strconv.Itoa(defaultLogLevel))); logLevel < level {
+// Log writes one log line when level is at or above the threshold. Levels
+// that are not one of the six standard ones are ignored. It must be called
+// directly by the public logus function so the reported source location is
+// that function's caller.
+func Log(ctx context.Context, level Level, msg ...any) {
+	if !level.valid() {
 		return
 	}
 
 	logger := getLogger()
+	ensureLevel()
+	if level < Level(levelVar.Level()) {
+		return
+	}
+
 	attrs := []slog.Attr{
 		slog.String("server_ip", getEnv("ServerIP", "")),
 	}
@@ -107,20 +86,7 @@ func Log(ctx context.Context, defaultLogLevel, level int, msg ...any) {
 		fields = append(fields, attr)
 	}
 
-	logger.Log(logCtx, mapLevelToSlog(level), fmt.Sprint(msg...), fields...)
-}
-
-func mapLevelToSlog(level int) slog.Level {
-	switch level {
-	case LevelPanic, LevelError:
-		return slog.LevelError
-	case LevelWarn:
-		return slog.LevelWarn
-	case LevelDebug:
-		return slog.LevelDebug
-	default:
-		return slog.LevelInfo
-	}
+	logger.Log(logCtx, slog.Level(level), fmt.Sprint(msg...), fields...)
 }
 
 func callerAttrs(skip int) []slog.Attr {

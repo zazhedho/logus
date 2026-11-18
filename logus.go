@@ -12,19 +12,32 @@ import (
 	"github.com/zazhedho/logus/internal/core"
 )
 
-// Log levels. Lower numbers are more severe. A call is written only when the
-// LOG_LEVEL environment variable, read as an integer, is greater than or equal
-// to the call's level; for example LOG_LEVEL=3 writes Panic, Error, Fail and
-// Info but drops Data, Warn and Debug.
+// Level is a log severity. The values are aligned with log/slog.
+type Level int
+
+// The six standard levels, ordered trace < debug < info < warn < error <
+// fatal. A call is written when its level is at or above the configured
+// threshold (LOG_LEVEL, or SetLevel).
 const (
-	LogLevelPanic = 0
-	LogLevelError = 1
-	LogLevelFail  = 2
-	LogLevelInfo  = 3
-	LogLevelData  = 4
-	LogLevelWarn  = 5
-	LogLevelDebug = 6
+	// LogLevelTrace is the finest-grained tracing, normally off.
+	LogLevelTrace Level = -8
+	// LogLevelDebug is diagnostic detail for development.
+	LogLevelDebug Level = -4
+	// LogLevelInfo is a normal, significant event.
+	LogLevelInfo Level = 0
+	// LogLevelWarn means something is off but the service continues.
+	LogLevelWarn Level = 4
+	// LogLevelError means an operation failed and needs attention.
+	LogLevelError Level = 8
+	// LogLevelFatal marks an unrecoverable condition. It only labels the
+	// line: logus never exits, panics or stops anything.
+	LogLevelFatal Level = 12
 )
+
+// String returns TRACE, DEBUG, INFO, WARN, ERROR or FATAL.
+func (l Level) String() string {
+	return core.Level(l).String()
+}
 
 const (
 	// CtxKeyID is the gin-style context key under which the request id is stored.
@@ -33,21 +46,32 @@ const (
 	CtxKeyUserID = "userId"
 )
 
-// WriteLog writes a log line at the given level. When LOG_LEVEL is unset the
-// threshold is LogLevelWarn. It logs with context.Background(), so the line
+// SetLevel changes the threshold at runtime. It is safe for concurrent use.
+// Called before the first log it takes precedence over LOG_LEVEL.
+func SetLevel(l Level) {
+	core.SetLevel(core.Level(l))
+}
+
+// GetLevel returns the current threshold.
+func GetLevel() Level {
+	return Level(core.GetLevel())
+}
+
+// WriteLog writes a log line at the given level when it is at or above the
+// threshold (default info). It logs with context.Background(), so the line
 // still carries a log_id: a freshly generated id per call, since none is
-// stored.
-func WriteLog(level int, msg ...any) {
+// stored. Levels other than the six standard ones are ignored.
+func WriteLog(level Level, msg ...any) {
 	// core.Log must be called directly from here: its caller-depth
 	// assumes exactly one layer between it and the user's code.
-	core.Log(context.Background(), core.LevelWarn, level, msg...)
+	core.Log(context.Background(), core.Level(level), msg...)
 }
 
 // WriteLogWithContext writes a log line enriched with the log id and user id
-// found in ctx. When LOG_LEVEL is unset the threshold is LogLevelDebug.
-func WriteLogWithContext(ctx context.Context, level int, msg ...any) {
+// found in ctx. The threshold is the same as for WriteLog.
+func WriteLogWithContext(ctx context.Context, level Level, msg ...any) {
 	// See WriteLog: keep this a direct call.
-	core.Log(ctx, core.LevelDebug, level, msg...)
+	core.Log(ctx, core.Level(level), msg...)
 }
 
 // WithLogMetadata returns a copy of ctx carrying an explicit log id and user

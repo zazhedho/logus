@@ -88,3 +88,20 @@ func TestStringHandlerLevelFilter(t *testing.T) {
 		t.Fatal("nil level must default to info")
 	}
 }
+
+func TestStringHandlerPrintsLevelNames(t *testing.T) {
+	for level, name := range map[Level]string{
+		LevelTrace: "TRACE", LevelDebug: "DEBUG", LevelInfo: "INFO",
+		LevelWarn: "WARN", LevelError: "ERROR", LevelFatal: "FATAL",
+	} {
+		var buf bytes.Buffer
+		handler := newStringHandler(&buf, slog.Level(LevelTrace))
+		record := slog.NewRecord(time.Time{}, slog.Level(level), "m", 0)
+		if err := handler.Handle(context.Background(), record); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(buf.String(), "]["+name+"]") {
+			t.Errorf("%s: line %q", name, buf.String())
+		}
+	}
+}
