@@ -28,7 +28,7 @@ func main() {
 	// Request id: log_id equals the request id.
 	reqCtx := logus.WithRequestID(context.Background(), uuid.New())
 	id := logus.RequestID(reqCtx)
-	logus.WriteLogWithContext(reqCtx, logus.LogLevelData, "request id is ", id)
+	logus.WriteLogWithContext(reqCtx, logus.LogLevelInfo, "request id is ", id)
 }
 ```
 
@@ -49,24 +49,38 @@ Metadata wins over the request id: when both are present, `log_id` is the one fr
 
 ## Levels
 
-| Constant | Value | slog level |
-| --- | --- | --- |
-| `LogLevelPanic` | 0 | Error |
-| `LogLevelError` | 1 | Error |
-| `LogLevelFail` | 2 | Info |
-| `LogLevelInfo` | 3 | Info |
-| `LogLevelData` | 4 | Info |
-| `LogLevelWarn` | 5 | Warn |
-| `LogLevelDebug` | 6 | Debug |
+Six standard levels, ordered trace < debug < info < warn < error < fatal. `Level` is an `int` whose values match `log/slog`.
 
-A call is written when `LOG_LEVEL` is greater than or equal to its level value.
+| Constant | Value | Name | When to use |
+| --- | --- | --- | --- |
+| `LogLevelTrace` | -8 | `TRACE` | Finest-grained tracing, normally off. |
+| `LogLevelDebug` | -4 | `DEBUG` | Diagnostics for development. |
+| `LogLevelInfo` | 0 | `INFO` | Normal significant events. |
+| `LogLevelWarn` | 4 | `WARN` | Something is off but the service continues. |
+| `LogLevelError` | 8 | `ERROR` | An operation failed and needs attention. |
+| `LogLevelFatal` | 12 | `FATAL` | An unrecoverable condition. It is only logged: logus never exits or panics, the caller decides whether to stop. |
+
+The level appears by name (`TRACE`, `FATAL`, ...) in every output format. A call is written when its level is at or above the configured level. Values that are not one of the six constants are ignored.
+
+### Setting the level
+
+`LOG_LEVEL` accepts `trace`, `debug`, `info`, `warn` (or `warning`), `error` and `fatal`, case-insensitive and ignoring surrounding spaces. The default is `info`, for both `WriteLog` and `WriteLogWithContext`.
+
+Legacy numeric values from v0.1.x are still accepted: `0`-`1` mean `error`, `2`-`5` mean `info`, `6` means `debug`. Any other value, including an empty one, falls back to `info` and writes one warning line the first time.
+
+`LOG_LEVEL` is read once, when the logger is first used. To change the level while running, use `SetLevel` and `GetLevel`; both are safe for concurrent use, and `SetLevel` called before the first log wins over `LOG_LEVEL`:
+
+```go
+logus.SetLevel(logus.LogLevelDebug)
+current := logus.GetLevel() // LogLevelDebug
+```
 
 ## Configuration
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `LOG_LEVEL` | `5` for `WriteLog`, `6` for `WriteLogWithContext` | Highest level value that is written. |
-| `LOG_FORMAT` | `json` | `json`, `text` (slog key=value) or `string` (compact bracketed line). Any other value falls back to `json`. |
+| `LOG_LEVEL` | `info` | Lowest level that is written; see above. Read once. |
+| `LOG_FORMAT` | `json` | `json`, `text` (slog key=value) or `string` (compact bracketed line). Any other value falls back to `json`. Read once. |
 | `ServerIP` | empty | Written as `server_ip`. |
 | `NODE` | empty | Written as `node` when set. |
 
@@ -82,12 +96,17 @@ The user id and source segments are omitted when empty. The log id segment is pr
 
 ## Known behavior
 
-- Without `LOG_LEVEL`, `WriteLog` uses the default 5 (Debug is dropped) and `WriteLogWithContext` uses the default 6.
-- An empty or non-numeric `LOG_LEVEL` is treated as 0, so only Panic level is written.
-- `LOG_LEVEL` is read on every call; `LOG_FORMAT` is read only once, when the logger is first used.
 - Contexts exposing either `Get(string)`/`Set(string, any)` or `Get(any)`/`Set(any, any)` (the latter is `*gin.Context` in current gin) are recognized without importing gin, using the keys `CTX_ID` for the request id and `userId` for the user id.
 - `log_id` is always written for non-nil contexts, including `WriteLog` (which uses `context.Background()`). When no log id or request id is stored, a new id is generated per call, so consecutive `WriteLog` lines get different ids.
 - A stored request id equal to the nil UUID is treated as missing and replaced with a newly generated id.
+
+## Upgrading from v0.1.x
+
+- Removed constants: `LogLevelPanic` (use `LogLevelError`), `LogLevelFail` and `LogLevelData` (use `LogLevelInfo`).
+- `WriteLog` and `WriteLogWithContext` take a `Level` instead of an `int`; the constants are typed, so only code passing raw integers needs changing.
+- A numeric `LOG_LEVEL` still works through the mapping above, but the old meaning (a higher number logs more) is gone: prefer level names.
+- The default is now `info` for both functions (it was 5 and 6, which logged debug for `WriteLogWithContext`).
+- `LOG_LEVEL` is read once, not on every call; use `SetLevel` to change it at runtime.
 
 ## Layout
 
