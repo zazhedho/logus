@@ -21,10 +21,9 @@ import (
 	"github.com/zazhedho/logus/internal/core"
 )
 
-// logFile is where the process-wide logger writes during these tests. The
-// logger binds to os.Stdout on first use and reads LOG_FORMAT only once, so
-// TestMain points os.Stdout at a file, forces the JSON format, triggers
-// logger creation, and restores os.Stdout.
+// logFile receives the process-wide logger's output. The logger binds to
+// os.Stdout and reads LOG_FORMAT only once, so TestMain redirects stdout to
+// this file and forces JSON before the logger is first created.
 var logFile *os.File
 
 func TestMain(m *testing.M) {
@@ -404,7 +403,7 @@ func TestRequestIDParsesStringFromGetter(t *testing.T) {
 
 func TestRequestIDReadsPlainStringKey(t *testing.T) {
 	a := uuid.New()
-	//nolint:staticcheck // plain string key is the legacy behavior under test
+	//nolint:staticcheck // plain string key is a supported lookup under test
 	ctx := context.WithValue(context.Background(), logus.CtxKeyID, a)
 	if got := logus.RequestID(ctx); got != a {
 		t.Fatalf("got %v, want %v", got, a)
@@ -500,8 +499,6 @@ func TestRequestIDReadsFromAnyKeyContext(t *testing.T) {
 		t.Fatalf("string value: got %v, want %v", got, b)
 	}
 }
-
-// ---- level scheme ----------------------------------------------------------
 
 // helperEnv selects a child-process mode. LOG_LEVEL and LOG_FORMAT are read
 // once per process, so tests that depend on their initial value re-run the

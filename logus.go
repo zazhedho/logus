@@ -52,7 +52,8 @@ func SetLevel(l Level) {
 	core.SetLevel(core.Level(l))
 }
 
-// GetLevel returns the current threshold.
+// GetLevel returns the current threshold, reading LOG_LEVEL first if the
+// logger has not been used yet.
 func GetLevel() Level {
 	return Level(core.GetLevel())
 }
@@ -86,7 +87,8 @@ func WithRequestID(ctx context.Context, id uuid.UUID) context.Context {
 	return core.WithRequestID(ctx, id)
 }
 
-// RequestIDFromContext returns the request id stored by WithRequestID.
+// RequestIDFromContext returns the id stored by WithRequestID. ok is false when
+// ctx is nil or holds no id, or the stored id is the zero UUID.
 func RequestIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 	return core.RequestIDFromContext(ctx)
 }

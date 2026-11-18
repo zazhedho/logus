@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-// getEnv returns the trimmed value of key, or def when key is not set.
 func getEnv(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok {
 		return strings.TrimSpace(v)
@@ -14,7 +13,6 @@ func getEnv(key, def string) string {
 	return def
 }
 
-// normalizeKey lower-cases and trims v.
 func normalizeKey(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
 }

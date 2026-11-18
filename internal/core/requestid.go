@@ -58,7 +58,8 @@ func WithRequestID(ctx context.Context, id uuid.UUID) context.Context {
 	return context.WithValue(ctx, requestIDKey{}, id)
 }
 
-// RequestIDFromContext returns the request id stored by WithRequestID.
+// RequestIDFromContext returns the id stored by WithRequestID. ok is false when
+// ctx is nil or holds no id, or the stored id is the zero UUID.
 func RequestIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 	if ctx == nil {
 		return uuid.Nil, false
