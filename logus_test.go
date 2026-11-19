@@ -145,23 +145,6 @@ func (c *capture) last(t *testing.T) map[string]any {
 	return m
 }
 
-// unsetEnv removes key for the duration of the test and restores the old
-// value via t.Cleanup.
-func unsetEnv(t *testing.T, key string) {
-	t.Helper()
-	old, had := os.LookupEnv(key)
-	if err := os.Unsetenv(key); err != nil {
-		t.Fatalf("unset %s: %v", key, err)
-	}
-	t.Cleanup(func() {
-		if had {
-			_ = os.Setenv(key, old)
-		} else {
-			_ = os.Unsetenv(key)
-		}
-	})
-}
-
 // TestConcurrentWritesThroughPublicAPI checks that parallel WriteLog calls
 // each produce one whole JSON line.
 func TestConcurrentWritesThroughPublicAPI(t *testing.T) {
@@ -199,29 +182,37 @@ func TestMessageArgsAreJoinedWithSprint(t *testing.T) {
 }
 
 func TestServerIPAndNodeFields(t *testing.T) {
-	t.Run("set", func(t *testing.T) {
-		buf := captureLogs(t)
-		t.Setenv("ServerIP", "10.0.0.1")
-		t.Setenv("NODE", "api-1")
-		logus.WriteLog(logus.LogLevelInfo, "x")
-		m := buf.last(t)
-		if m["server_ip"] != "10.0.0.1" || m["node"] != "api-1" {
-			t.Fatalf("got server_ip=%v node=%v", m["server_ip"], m["node"])
-		}
-	})
-	t.Run("unset", func(t *testing.T) {
-		buf := captureLogs(t)
-		unsetEnv(t, "ServerIP")
-		unsetEnv(t, "NODE")
-		logus.WriteLog(logus.LogLevelInfo, "x")
-		m := buf.last(t)
-		if _, ok := m["node"]; ok {
-			t.Fatal("node key should be absent")
-		}
-		if v, ok := m["server_ip"]; !ok || v != "" {
-			t.Fatalf("server_ip = %v (present=%v), want empty string", v, ok)
-		}
-	})
+	cases := []struct {
+		name         string
+		env          []string
+		wantIP, node *string
+	}{
+		{"SERVER_IP and NODE", []string{"SERVER_IP=10.0.0.1", "NODE=api-1"}, str("10.0.0.1"), str("api-1")},
+		{"legacy ServerIP", []string{"ServerIP=10.0.0.2"}, str("10.0.0.2"), nil},
+		{"SERVER_IP wins", []string{"SERVER_IP=10.0.0.1", "ServerIP=10.9.9.9"}, str("10.0.0.1"), nil},
+		{"unset omits both", nil, nil, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			lines := runChildEnv(t, "oneline", "json", str("trace"), c.env...)
+			if len(lines) != 1 {
+				t.Fatalf("lines = %q", lines)
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(lines[0]), &m); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range map[string]*string{"server_ip": c.wantIP, "node": c.node} {
+				got, present := m[key]
+				if want == nil && present {
+					t.Errorf("%s present (%v), want omitted", key, got)
+				}
+				if want != nil && got != *want {
+					t.Errorf("%s = %v, want %q", key, got, *want)
+				}
+			}
+		})
+	}
 }
 
 func TestSourceAttributionPointsAtCaller(t *testing.T) {
@@ -532,6 +523,8 @@ func runHelper(mode string) {
 	case "setlevel-first":
 		logus.SetLevel(logus.LogLevelDebug)
 		probe(plain)
+	case "oneline":
+		logus.WriteLog(logus.LogLevelInfo, "x")
 	case "getlevel":
 		fmt.Println(logus.GetLevel())
 	case "readonce":
@@ -545,13 +538,22 @@ func runHelper(mode string) {
 // caller. A nil level leaves LOG_LEVEL unset.
 func runChild(t *testing.T, mode, format string, level *string) []string {
 	t.Helper()
+	return runChildEnv(t, mode, format, level)
+}
+
+// runChildEnv is runChild with extra environment entries; SERVER_IP, ServerIP
+// and NODE are cleared first so the child sees only what the caller passes.
+func runChildEnv(t *testing.T, mode, format string, level *string, extra ...string) []string {
+	t.Helper()
 	var env []string
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "LOG_LEVEL=") || strings.HasPrefix(kv, "LOG_FORMAT=") || strings.HasPrefix(kv, helperEnv+"=") {
+		if strings.HasPrefix(kv, "SERVER_IP=") || strings.HasPrefix(kv, "ServerIP=") || strings.HasPrefix(kv, "NODE=") ||
+			strings.HasPrefix(kv, "LOG_LEVEL=") || strings.HasPrefix(kv, "LOG_FORMAT=") || strings.HasPrefix(kv, helperEnv+"=") {
 			continue
 		}
 		env = append(env, kv)
 	}
+	env = append(env, extra...)
 	env = append(env, helperEnv+"="+mode, "LOG_FORMAT="+format)
 	if level != nil {
 		env = append(env, "LOG_LEVEL="+*level)

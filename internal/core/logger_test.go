@@ -187,3 +187,62 @@ func TestSetLevelIgnoresInvalidValues(t *testing.T) {
 		}
 	}
 }
+
+func resetStatic(t *testing.T) {
+	t.Helper()
+	staticOnce = sync.Once{}
+	t.Cleanup(func() { staticOnce = sync.Once{} })
+}
+
+func lastJSON(t *testing.T, buf *bytes.Buffer) map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	var m map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &m); err != nil {
+		t.Fatalf("parse %q: %v", lines[len(lines)-1], err)
+	}
+	return m
+}
+
+func TestServerIPOmittedWhenEmpty(t *testing.T) {
+	resetStatic(t)
+	t.Setenv("SERVER_IP", "")
+	t.Setenv("ServerIP", "")
+	buf := captureLogs(t, "json")
+	Log(context.Background(), LevelInfo, "x")
+	if _, has := lastJSON(t, buf)["server_ip"]; has {
+		t.Fatalf("server_ip present: %q", buf.String())
+	}
+}
+
+func TestServerIPEnvAndLegacyFallback(t *testing.T) {
+	for _, tc := range []struct{ new, old, want string }{
+		{"10.0.0.1", "", "10.0.0.1"},
+		{"10.0.0.1", "10.9.9.9", "10.0.0.1"},
+		{"", "10.9.9.9", "10.9.9.9"},
+	} {
+		resetStatic(t)
+		t.Setenv("SERVER_IP", tc.new)
+		t.Setenv("ServerIP", tc.old)
+		buf := captureLogs(t, "json")
+		Log(context.Background(), LevelInfo, "x")
+		if got := lastJSON(t, buf)["server_ip"]; got != tc.want {
+			t.Errorf("SERVER_IP=%q ServerIP=%q: got %v, want %q", tc.new, tc.old, got, tc.want)
+		}
+	}
+}
+
+func TestStaticFieldsResolvedOnce(t *testing.T) {
+	resetStatic(t)
+	t.Setenv("SERVER_IP", "1.1.1.1")
+	t.Setenv("NODE", "first")
+	buf := captureLogs(t, "json")
+	Log(context.Background(), LevelInfo, "a")
+	t.Setenv("SERVER_IP", "2.2.2.2")
+	t.Setenv("NODE", "second")
+	Log(context.Background(), LevelInfo, "b")
+	m := lastJSON(t, buf)
+	if m["server_ip"] != "1.1.1.1" || m["node"] != "first" {
+		t.Fatalf("environment was re-read: %v", m)
+	}
+}

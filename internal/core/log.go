@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 type logIDContextKey struct{}
@@ -47,12 +48,14 @@ func Log(ctx context.Context, level Level, msg ...any) {
 		return
 	}
 
-	attrs := []slog.Attr{
-		slog.String("server_ip", getEnv("ServerIP", "")),
+	st := getStatic()
+	attrs := make([]slog.Attr, 0, 8)
+	if st.serverIP != "" {
+		attrs = append(attrs, slog.String("server_ip", st.serverIP))
 	}
-	attrs = append(attrs, callerAttrs(callerSkip)...)
-	if node := getEnv("NODE", ""); node != "" {
-		attrs = append(attrs, slog.String("node", node))
+	attrs = append(attrs, callerAttrs(callerSkip, st.wd)...)
+	if st.node != "" {
+		attrs = append(attrs, slog.String("node", st.node))
 	}
 
 	if ctx != nil {
@@ -85,13 +88,13 @@ func Log(ctx context.Context, level Level, msg ...any) {
 	logger.Log(logCtx, slog.Level(level), fmt.Sprint(msg...), fields...)
 }
 
-func callerAttrs(skip int) []slog.Attr {
+func callerAttrs(skip int, wd string) []slog.Attr {
 	pc, file, line, ok := runtime.Caller(skip)
 	if !ok {
 		return nil
 	}
 
-	sourceFile := normalizeSourceFile(file)
+	sourceFile := normalizeSourceFile(file, wd)
 	sourceFunction := ""
 	if fn := runtime.FuncForPC(pc); fn != nil {
 		sourceFunction = fn.Name()
@@ -104,13 +107,35 @@ func callerAttrs(skip int) []slog.Attr {
 	}
 }
 
-func normalizeSourceFile(file string) string {
-	wd, err := os.Getwd()
-	if err == nil {
-		if rel, relErr := filepath.Rel(wd, file); relErr == nil && rel != "" && !strings.HasPrefix(rel, "..") {
+func normalizeSourceFile(file, wd string) string {
+	if wd != "" {
+		if rel, err := filepath.Rel(wd, file); err == nil && rel != "" && !strings.HasPrefix(rel, "..") {
 			return filepath.ToSlash(rel)
 		}
 	}
-
 	return filepath.ToSlash(file)
+}
+
+// static holds values that do not change for the life of the process.
+type static struct {
+	wd, serverIP, node string
+}
+
+var (
+	staticOnce sync.Once
+	staticVals static
+)
+
+// getStatic resolves the working directory, SERVER_IP (falling back to the
+// legacy ServerIP) and NODE once, on first use.
+func getStatic() static {
+	staticOnce.Do(func() {
+		wd, _ := os.Getwd()
+		ip := getEnv("SERVER_IP", "")
+		if ip == "" {
+			ip = getEnv("ServerIP", "")
+		}
+		staticVals = static{wd: wd, serverIP: ip, node: getEnv("NODE", "")}
+	})
+	return staticVals
 }
