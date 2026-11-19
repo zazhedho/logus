@@ -892,7 +892,7 @@ func TestFatalOnlyLabelsAndReturns(t *testing.T) {
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				t.Errorf("WriteLog(Fatal) panicked: %v", r)
+				t.Errorf("Log(Fatal) panicked: %v", r)
 			}
 		}()
 		logus.Log(logus.LevelFatal, "unrecoverable")
