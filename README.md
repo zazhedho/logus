@@ -51,7 +51,7 @@ func main() {
 | `SetFormat(name)` | Selects `json`, `text` or `string`. |
 | `SetLevel(level)` / `GetLevel()` | Changes or reads the threshold. |
 
-`Log` and `LogContext` join their arguments with a single space, whatever their types: `Log(LevelInfo, "a", 1, "b")` writes `a 1 b`.
+`Log` and `LogContext` join their arguments with a single space, whatever their types: `Log(LevelInfo, "a", 1, "b")` writes `a 1 b`. `Log` and the other logging functions drop a call whose level is not one of the six constants.
 
 Call these functions directly from your code. Each one is a direct call into the implementation so that `source_file`, `source_line` and `source_function` name your call site; wrapping them in your own helper makes the helper the reported caller.
 
@@ -96,7 +96,9 @@ The working directory (used to shorten `source_file`), `SERVER_IP` and `NODE` ar
 
 ### Output and format
 
-Lines go to `os.Stdout` unless redirected. `SetOutput` and `SetFormat` take effect for the lines that follow and are safe for concurrent use; `SetFormat` called before the first log wins over `LOG_FORMAT`.
+Lines go to `os.Stdout` unless redirected. `SetOutput` and `SetFormat` take effect for the lines that follow and are safe for concurrent use. After `SetOutput` returns, no further writes reach the previous writer. The writer you pass must not call logus: writes are serialized by a lock that is not reentrant, so a writer that logs deadlocks.
+
+`SetFormat` called before the first log wins over `LOG_FORMAT`.
 
 ```go
 var buf bytes.Buffer
@@ -116,11 +118,13 @@ The user id and source segments are omitted when empty. The log id segment is pr
 
 ### Control characters
 
-Every format writes one line per call. In the `string` format, carriage returns, line feeds, tabs and all other control characters (including DEL and the Unicode line and paragraph separators) in the message and in every bracketed field are written as visible escapes such as `\n`, `\r` and `\x1b`, so user-controlled text cannot forge additional log lines. The `json` and `text` formats escape or quote these characters themselves.
+Every format writes one line per call. In the `string` format, carriage returns, line feeds, tabs and all other control characters (including DEL and the Unicode line and paragraph separators) in the message and in every bracketed field are written as visible escapes such as `\n`, `\r` and `\x1b`, so user-controlled text cannot forge additional log lines. The escaping is lossless: a backslash is written as `\\`, so a literal backslash followed by `n` in the input is distinguishable from an escaped newline. Bidirectional overrides, zero-width and other Unicode format characters (category Cf, such as U+202E and U+200B) are written as `\uNNNN`, and invalid UTF-8 bytes become U+FFFD. The `json` and `text` formats escape or quote these characters themselves.
 
 ## Request ids and gin
 
 Contexts exposing either `Get(string)`/`Set(string, any)` or `Get(any)`/`Set(any, any)` (the latter is `*gin.Context` in current gin) are recognized without importing gin. The request id is read from, and a generated one stored under, the key `CtxKeyRequestID` (`"CTX_ID"`); the user id is read from `CtxKeyUserID` (`"userId"`). `WithRequestID` and `WithUserID` take precedence over these keys.
+
+A context returned by `WithRequestID` or `WithUserID` wraps the gin context in a standard context and no longer has gin's `Set`, so a request id generated afterwards is not stored back on the gin context. Call `WithRequestID` once at the start of a request and pass the resulting context on, so every line of the request shares one `log_id`.
 
 `*gin.Context` objects are pooled and reused after the handler returns. Do not pass a `*gin.Context` to a goroutine that outlives the handler and call `RequestID` on it there: the context may already belong to another request, or `RequestID` may write to it concurrently. Take the request's standard context instead and pass that on:
 
