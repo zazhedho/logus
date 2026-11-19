@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
-// captureLogs swaps the package logger for newLogger(&buf, format) for the
+// captureLogs points the package output at a buffer with the given format for the
 // duration of the test and restores it via t.Cleanup.
 func captureLogs(t *testing.T, format string) *bytes.Buffer {
 	t.Helper()
@@ -23,8 +25,10 @@ func captureLogs(t *testing.T, format string) *bytes.Buffer {
 
 func TestNewLoggerSelectsFormat(t *testing.T) {
 	emit := func(format string) string {
+		resetState(t)
 		var buf bytes.Buffer
-		newLogger(&buf, format).Info("hello")
+		SetOutput(&buf)
+		newLogger(format).Info("hello")
 		return strings.TrimSpace(buf.String())
 	}
 	datePrefix := regexp.MustCompile(`^\d{4}/\d{2}/\d{2} `)
@@ -96,8 +100,11 @@ func resetState(t *testing.T) {
 	t.Helper()
 	reset := func() {
 		logMu.Lock()
-		appLogger, logOut, logFormat = nil, nil, ""
+		appLogger, logFormat = nil, ""
 		logMu.Unlock()
+		writeMu.Lock()
+		curOut = nil
+		writeMu.Unlock()
 		levelOnce = sync.Once{}
 		levelVar.Set(0)
 	}
@@ -244,5 +251,98 @@ func TestStaticFieldsResolvedOnce(t *testing.T) {
 	m := lastJSON(t, buf)
 	if m["server_ip"] != "1.1.1.1" || m["node"] != "first" {
 		t.Fatalf("environment was re-read: %v", m)
+	}
+}
+
+// gatedBuffer is a goroutine-safe writer that counts what it receives.
+type gatedBuffer struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (g *gatedBuffer) Write(p []byte) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.n += len(p)
+	return len(p), nil
+}
+
+func (g *gatedBuffer) size() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.n
+}
+
+func TestSetOutputDrainsInFlightWrites(t *testing.T) {
+	for _, format := range []string{"json", "text", "string"} {
+		t.Run(format, func(t *testing.T) {
+			resetState(t)
+			old := &gatedBuffer{}
+			SetOutput(old)
+			SetFormat(format)
+			stop := make(chan struct{})
+			var wg sync.WaitGroup
+			for g := 0; g < 8; g++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for {
+						select {
+						case <-stop:
+							return
+						default:
+							Log(context.Background(), LevelInfo, "spin")
+						}
+					}
+				}()
+			}
+			for old.size() == 0 {
+				runtime.Gosched()
+			}
+			SetOutput(&gatedBuffer{})
+			after := old.size()
+			time.Sleep(20 * time.Millisecond)
+			close(stop)
+			wg.Wait()
+			if got := old.size(); got != after {
+				t.Fatalf("old writer received %d bytes after SetOutput returned", got-after)
+			}
+		})
+	}
+}
+
+func TestStringLoggerUsesTheSharedWriteLock(t *testing.T) {
+	resetState(t)
+	SetFormat("string")
+	h, ok := getLogger().Handler().(*stringHandler)
+	if !ok {
+		t.Fatalf("handler is %T", getLogger().Handler())
+	}
+	if h.mu != &writeMu {
+		t.Fatal("string handler does not use the package write lock")
+	}
+}
+
+// probeWriter reports whether logMu is free while a write is in progress.
+type probeWriter struct{ freeDuringWrite bool }
+
+func (p *probeWriter) Write(b []byte) (int, error) {
+	done := make(chan struct{})
+	go func() { logMu.RLock(); logMu.RUnlock(); close(done) }() //nolint:staticcheck // probes lock availability
+	select {
+	case <-done:
+		p.freeDuringWrite = true
+	case <-time.After(time.Second):
+	}
+	return len(b), nil
+}
+
+func TestFormatWarningIsWrittenWithoutHoldingTheLoggerLock(t *testing.T) {
+	resetState(t)
+	p := &probeWriter{}
+	SetOutput(p)
+	SetFormat("yaml")
+	if !p.freeDuringWrite {
+		t.Fatal("warning was written while logMu was held")
 	}
 }

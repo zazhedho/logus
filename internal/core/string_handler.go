@@ -20,11 +20,17 @@ type stringHandler struct {
 }
 
 func newStringHandler(writer io.Writer, level slog.Leveler) slog.Handler {
+	return newStringHandlerLocked(writer, level, &sync.Mutex{})
+}
+
+// newStringHandlerLocked serializes writes with mu, which every derived
+// handler shares.
+func newStringHandlerLocked(writer io.Writer, level slog.Leveler, mu *sync.Mutex) slog.Handler {
 	if level == nil {
 		level = slog.LevelInfo
 	}
 	return &stringHandler{
-		mu:     &sync.Mutex{},
+		mu:     mu,
 		writer: writer,
 		level:  level,
 	}

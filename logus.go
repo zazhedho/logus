@@ -56,7 +56,8 @@ func GetLevel() Level {
 }
 
 // SetOutput redirects all log lines to w; nil restores os.Stdout. It is safe
-// for concurrent use and takes effect for subsequent lines.
+// for concurrent use. After it returns, no further writes reach the previous
+// writer. w must not call logus: the write lock is not reentrant.
 func SetOutput(w io.Writer) {
 	core.SetOutput(w)
 }

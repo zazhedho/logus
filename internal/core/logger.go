@@ -11,35 +11,54 @@ import (
 
 var (
 	logMu     sync.RWMutex
-	appLogger *slog.Logger // nil until first use and after SetOutput/SetFormat
-	logOut    io.Writer    // nil means os.Stdout
+	appLogger *slog.Logger // nil until first use and after SetFormat
 	logFormat string       // resolved format; empty until resolved
 )
 
-// writeMu serializes writes from every logger built by this package, so lines
-// from handlers created at different times (after SetFormat or SetOutput)
-// never interleave on a shared writer.
-var writeMu sync.Mutex
+// writeMu is the single write lock. Every line, in every format, is written
+// while holding it, and the destination curOut is read and replaced only under
+// it. SetOutput therefore switches atomically: once it returns, no write can
+// reach the previous writer. Because the lock is not reentrant, a writer given
+// to SetOutput must not call back into logus.
+var (
+	writeMu sync.Mutex
+	curOut  io.Writer // nil means os.Stdout; guarded by writeMu
+)
 
-type syncWriter struct{ w io.Writer }
-
-func (s syncWriter) Write(p []byte) (int, error) {
-	writeMu.Lock()
-	defer writeMu.Unlock()
-	return s.w.Write(p)
+// dest returns the current destination. The caller must hold writeMu.
+func dest() io.Writer {
+	if curOut != nil {
+		return curOut
+	}
+	return os.Stdout
 }
 
-// newLogger writes to w: "text" selects slog's text handler, "string" the
-// compact line handler, anything else JSON.
-func newLogger(w io.Writer, format string) *slog.Logger {
+// destWriter writes to the current destination without locking; it is for
+// callers that already hold writeMu (the string handler).
+type destWriter struct{}
+
+func (destWriter) Write(p []byte) (int, error) { return dest().Write(p) }
+
+// lockedWriter takes writeMu around each write (json and text handlers).
+type lockedWriter struct{}
+
+func (lockedWriter) Write(p []byte) (int, error) {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	return dest().Write(p)
+}
+
+// newLogger builds a logger for the package destination: "text" selects slog's
+// text handler, "string" the compact line handler, anything else JSON.
+func newLogger(format string) *slog.Logger {
 	options := &slog.HandlerOptions{Level: &levelVar, ReplaceAttr: replaceLevelAttr}
 	switch normalizeKey(format) {
 	case "text":
-		return slog.New(slog.NewTextHandler(w, options))
+		return slog.New(slog.NewTextHandler(lockedWriter{}, options))
 	case "string":
-		return slog.New(newStringHandler(w, &levelVar))
+		return slog.New(newStringHandlerLocked(destWriter{}, &levelVar, &writeMu))
 	default:
-		return slog.New(slog.NewJSONHandler(w, options))
+		return slog.New(slog.NewJSONHandler(lockedWriter{}, options))
 	}
 }
 
@@ -65,17 +84,22 @@ func getLogger() *slog.Logger {
 		return l
 	}
 	logMu.Lock()
-	defer logMu.Unlock()
+	var warn string
 	if appLogger == nil {
-		rebuildLocked(os.Getenv("LOG_FORMAT"), "LOG_FORMAT")
+		warn = rebuildLocked(os.Getenv("LOG_FORMAT"), "LOG_FORMAT")
 	}
-	return appLogger
+	l = appLogger
+	logMu.Unlock()
+	if warn != "" {
+		l.Warn(warn) // after unlocking: writing never happens under logMu
+	}
+	return l
 }
 
 // rebuildLocked builds appLogger. When no format has been resolved yet, raw is
-// resolved and an unknown value produces one warning naming source.
-func rebuildLocked(raw, source string) {
-	var warn string
+// resolved; for an unknown value it returns the warning to emit once logMu is
+// released, naming source.
+func rebuildLocked(raw, source string) (warn string) {
 	if logFormat == "" {
 		var ok bool
 		logFormat, ok = resolveFormat(raw)
@@ -83,30 +107,28 @@ func rebuildLocked(raw, source string) {
 			warn = fmt.Sprintf("logus: unrecognized %s %q, using json", source, strings.TrimSpace(raw))
 		}
 	}
-	var w io.Writer = os.Stdout
-	if logOut != nil {
-		w = logOut
-	}
-	appLogger = newLogger(syncWriter{w}, logFormat)
-	if warn != "" {
-		appLogger.Warn(warn)
-	}
+	appLogger = newLogger(logFormat)
+	return warn
 }
 
 // SetOutput redirects every line to w; nil restores os.Stdout. It is safe for
-// concurrent use.
+// concurrent use. After it returns, no further writes reach the previous
+// writer. w must not call logus: the write lock is not reentrant.
 func SetOutput(w io.Writer) {
-	logMu.Lock()
-	defer logMu.Unlock()
-	logOut = w
-	rebuildLocked(os.Getenv("LOG_FORMAT"), "LOG_FORMAT")
+	writeMu.Lock()
+	curOut = w
+	writeMu.Unlock()
 }
 
 // SetFormat selects json, text or string (case-insensitive). An empty name
 // means json; an unknown one falls back to json and writes one warning.
 func SetFormat(format string) {
 	logMu.Lock()
-	defer logMu.Unlock()
 	logFormat = ""
-	rebuildLocked(format, "log format")
+	warn := rebuildLocked(format, "log format")
+	l := appLogger
+	logMu.Unlock()
+	if warn != "" {
+		l.Warn(warn)
+	}
 }

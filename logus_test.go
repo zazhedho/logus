@@ -22,8 +22,8 @@ import (
 	"github.com/zazhedho/logus/internal/core"
 )
 
-// // logFile receives the process-wide logger's output: TestMain redirects stdout
-// // and forces JSON before the logger (bound to os.Stdout, LOG_FORMAT read once) is created.
+// logFile receives the process-wide logger's output: TestMain points it there
+// with SetOutput and forces JSON with SetFormat.
 var logFile *os.File
 
 func TestMain(m *testing.M) {
@@ -42,14 +42,10 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	logFile = f
-
-	origStdout := os.Stdout
-	os.Stdout = f
-	_ = os.Setenv("LOG_FORMAT", "json")
-	_ = os.Setenv("LOG_LEVEL", "trace")
-	logus.Log(logus.LevelInfo, "logger warm-up")
+	logus.SetOutput(f)
+	logus.SetFormat("json")
 	_ = os.Unsetenv("LOG_LEVEL")
-	os.Stdout = origStdout
+	logus.SetLevel(logus.LevelTrace)
 
 	code := m.Run()
 	_ = f.Close()
