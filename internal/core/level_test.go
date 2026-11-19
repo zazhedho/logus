@@ -1,6 +1,8 @@
 package core
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestParseLevel(t *testing.T) {
 	cases := []struct {
@@ -30,4 +32,23 @@ func TestLevelString(t *testing.T) {
 			t.Errorf("%d.String() = %q, want %q", int(l), l.String(), want)
 		}
 	}
+}
+
+func FuzzParseLevel(f *testing.F) {
+	for _, seed := range []string{"", "trace", "DEBUG", " warn ", "warning", "0", "6", "7", "-1", "+3", "1e1", "９", "\x00", "info\n", "99999999999999999999"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		level, ok := parseLevel(in)
+		if ok && !level.valid() {
+			t.Fatalf("parseLevel(%q) returned invalid level %d", in, int(level))
+		}
+		if !ok && level != LevelInfo {
+			t.Fatalf("parseLevel(%q) failed but returned %v, want the info fallback", in, level)
+		}
+		// Surrounding spaces never change the outcome.
+		if l2, ok2 := parseLevel("  " + in + "\t"); ok2 != ok || l2 != level {
+			t.Fatalf("parseLevel(%q) = (%v,%v) but padded gives (%v,%v)", in, level, ok, l2, ok2)
+		}
+	})
 }

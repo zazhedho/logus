@@ -982,3 +982,24 @@ func TestSetLevelRejectsValuesOutsideTheSix(t *testing.T) {
 		}
 	}
 }
+
+func TestControlCharactersCannotForgeLinesInAnyFormat(t *testing.T) {
+	t.Cleanup(func() { logus.SetOutput(logFile); logus.SetFormat("json") })
+	ctx := logus.WithUserID(context.Background(), "u\nFORGED")
+	for _, format := range []string{"json", "text", "string"} {
+		t.Run(format, func(t *testing.T) {
+			var buf bytes.Buffer
+			logus.SetOutput(&buf)
+			logus.SetFormat(format)
+			logus.Log(logus.LevelInfo, "first\r\nFORGED line\x1b[31m")
+			logus.LogContextf(ctx, logus.LevelInfo, "second\n%s", "FORGED too")
+			lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+			if len(lines) != 2 {
+				t.Fatalf("lines = %d, want 2: %q", len(lines), buf.String())
+			}
+			if strings.ContainsAny(buf.String(), "\r\x1b") {
+				t.Fatalf("raw control character in %q", buf.String())
+			}
+		})
+	}
+}
