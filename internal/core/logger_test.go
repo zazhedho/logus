@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"regexp"
 	"runtime"
 	"strings"
@@ -345,4 +346,42 @@ func TestFormatWarningIsWrittenWithoutHoldingTheLoggerLock(t *testing.T) {
 	if !p.freeDuringWrite {
 		t.Fatal("warning was written while logMu was held")
 	}
+}
+
+func TestConcurrentConfigurationAndLogging(t *testing.T) {
+	resetState(t)
+	SetOutput(io.Discard)
+	levels := []Level{LevelTrace, LevelDebug, LevelInfo, LevelWarn, LevelError, LevelFatal}
+	formats := []string{"json", "text", "string", "bogus", ""}
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				Log(context.Background(), levels[i%len(levels)], "msg")
+				Logf(context.Background(), LevelFatal, "msg %d", i)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				SetOutput([]io.Writer{io.Discard, &gatedBuffer{}}[i%2])
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				SetFormat(formats[i%len(formats)])
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				SetLevel(levels[i%len(levels)])
+				_ = GetLevel()
+			}
+		}()
+	}
+	wg.Wait()
 }
