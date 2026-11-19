@@ -14,7 +14,7 @@ import (
 type Level int
 
 // The six standard levels, ordered trace < debug < info < warn < error < fatal.
-// The public logus package mirrors these values as its LogLevel constants.
+// The public logus package re-exports them.
 const (
 	LevelTrace Level = -8
 	LevelDebug Level = -4
@@ -58,8 +58,8 @@ var (
 	levelOnce sync.Once
 )
 
-// // parseLevel parses a LOG_LEVEL name (case-insensitive) or legacy v0.1.x number
-// // (0-1 error, 2-5 info, 6 debug); ok is false otherwise and the level is info.
+// parseLevel parses a LOG_LEVEL name (case-insensitive) or legacy number (0-1
+// error, 2-5 info, 6 debug); ok is false otherwise and the level is info.
 func parseLevel(v string) (level Level, ok bool) {
 	switch normalizeKey(v) {
 	case "trace":
@@ -95,20 +95,24 @@ func ensureLevel() {
 		level := LevelInfo
 		raw, set := os.LookupEnv("LOG_LEVEL")
 		valid := true
-		if set {
+		// An empty LOG_LEVEL counts as unset.
+		if set && strings.TrimSpace(raw) != "" {
 			level, valid = parseLevel(raw)
 		}
 		levelVar.Set(slog.Level(level))
 		if !valid {
-			getLogger().Warn(fmt.Sprintf("logus: unrecognized LOG_LEVEL %q, using info", raw),
-				slog.String("server_ip", getEnv("ServerIP", "")))
+			getLogger().Warn(fmt.Sprintf("logus: unrecognized LOG_LEVEL %q, using info", raw))
 		}
 	})
 }
 
 // SetLevel changes the threshold. It is safe for concurrent use and, when
 // called before the first log, takes precedence over LOG_LEVEL.
+// Values other than the six standard levels are ignored.
 func SetLevel(l Level) {
+	if !l.valid() {
+		return
+	}
 	levelOnce.Do(func() {})
 	levelVar.Set(slog.Level(l))
 }

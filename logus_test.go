@@ -1,6 +1,7 @@
 package logus_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,8 +22,8 @@ import (
 	"github.com/zazhedho/logus/internal/core"
 )
 
-// // logFile receives the process-wide logger's output: TestMain redirects stdout
-// // and forces JSON before the logger (bound to os.Stdout, LOG_FORMAT read once) is created.
+// logFile receives the process-wide logger's output: TestMain points it there
+// with SetOutput and forces JSON with SetFormat.
 var logFile *os.File
 
 func TestMain(m *testing.M) {
@@ -41,14 +42,10 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	logFile = f
-
-	origStdout := os.Stdout
-	os.Stdout = f
-	_ = os.Setenv("LOG_FORMAT", "json")
-	_ = os.Setenv("LOG_LEVEL", "trace")
-	logus.WriteLog(logus.LogLevelInfo, "logger warm-up")
+	logus.SetOutput(f)
+	logus.SetFormat("json")
 	_ = os.Unsetenv("LOG_LEVEL")
-	os.Stdout = origStdout
+	logus.SetLevel(logus.LevelTrace)
 
 	code := m.Run()
 	_ = f.Close()
@@ -144,24 +141,7 @@ func (c *capture) last(t *testing.T) map[string]any {
 	return m
 }
 
-// unsetEnv removes key for the duration of the test and restores the old
-// value via t.Cleanup.
-func unsetEnv(t *testing.T, key string) {
-	t.Helper()
-	old, had := os.LookupEnv(key)
-	if err := os.Unsetenv(key); err != nil {
-		t.Fatalf("unset %s: %v", key, err)
-	}
-	t.Cleanup(func() {
-		if had {
-			_ = os.Setenv(key, old)
-		} else {
-			_ = os.Unsetenv(key)
-		}
-	})
-}
-
-// TestConcurrentWritesThroughPublicAPI checks that parallel WriteLog calls
+// TestConcurrentWritesThroughPublicAPI checks that parallel Log calls
 // each produce one whole JSON line.
 func TestConcurrentWritesThroughPublicAPI(t *testing.T) {
 	buf := captureLogs(t)
@@ -171,7 +151,7 @@ func TestConcurrentWritesThroughPublicAPI(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 20; i++ {
-				logus.WriteLogWithContext(context.Background(), logus.LogLevelInfo, "complete-message")
+				logus.LogContext(context.Background(), logus.LevelInfo, "complete-message")
 			}
 		}()
 	}
@@ -188,53 +168,146 @@ func TestConcurrentWritesThroughPublicAPI(t *testing.T) {
 	}
 }
 
-func TestMessageArgsAreJoinedWithSprint(t *testing.T) {
+func TestMessageArgsAreJoinedWithSingleSpaces(t *testing.T) {
 	buf := captureLogs(t)
 	err := errors.New("boom")
-	logus.WriteLog(logus.LogLevelInfo, "a", 1, err, nil)
-	if got, want := buf.last(t)["msg"], fmt.Sprint("a", 1, err, nil); got != want {
-		t.Fatalf("msg = %q, want %q", got, want)
+	ctx := context.Background()
+	for name, call := range map[string]func(){
+		"Log":        func() { logus.Log(logus.LevelInfo, "a", "b", 1, 2, err, nil) },
+		"LogContext": func() { logus.LogContext(ctx, logus.LevelInfo, "a", "b", 1, 2, err, nil) },
+	} {
+		buf.reset()
+		call()
+		if got, want := buf.last(t)["msg"], "a b 1 2 boom <nil>"; got != want {
+			t.Errorf("%s: msg = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestFormattedVariants(t *testing.T) {
+	buf := captureLogs(t)
+	ctx := logus.WithRequestID(context.Background(), uuid.New())
+	logus.Logf(logus.LevelWarn, "took %dms for %s", 12, "q")
+	if m := buf.last(t); m["msg"] != "took 12ms for q" || m["level"] != "WARN" {
+		t.Fatalf("Logf: %v", m)
+	}
+	buf.reset()
+	logus.LogContextf(ctx, logus.LevelError, "user %s failed", "u1")
+	if m := buf.last(t); m["msg"] != "user u1 failed" || m["level"] != "ERROR" || m["log_id"] != logus.RequestID(ctx).String() {
+		t.Fatalf("LogContextf: %v", m)
+	}
+}
+
+func TestFormattedVariantsHonourThresholdAndInvalidLevels(t *testing.T) {
+	t.Cleanup(func() { logus.SetLevel(logus.LevelTrace) })
+	buf := captureLogs(t)
+	logus.SetLevel(logus.LevelError)
+	logus.Logf(logus.LevelInfo, "dropped %d", 1)
+	logus.LogContextf(context.Background(), logus.LevelInfo, "dropped %d", 2)
+	logus.Logf(logus.Level(3), "invalid")
+	if got := buf.lines(); len(got) != 0 {
+		t.Fatalf("expected no output, got %q", got)
+	}
+}
+
+func TestUserIDHelpers(t *testing.T) {
+	ctx := logus.WithUserID(context.Background(), "u-1")
+	if got := logus.UserID(ctx); got != "u-1" {
+		t.Fatalf("UserID = %q", got)
+	}
+	if got := logus.UserID(context.Background()); got != "" {
+		t.Fatalf("UserID without value = %q", got)
+	}
+	if got := logus.UserID(nil); got != "" { //nolint:staticcheck // nil context is supported
+		t.Fatalf("UserID(nil) = %q", got)
+	}
+	if ctx := logus.WithUserID(nil, "x"); ctx == nil { //nolint:staticcheck // nil context is supported
+		t.Fatal("WithUserID(nil) returned nil")
+	}
+	f := newFakeGinContext()
+	f.Set(logus.CtxKeyUserID, "gin-user")
+	if got := logus.UserID(f); got != "gin-user" {
+		t.Fatalf("UserID via Get = %q", got)
+	}
+	// An explicit WithUserID wins over the gin-style key.
+	if got := logus.UserID(logus.WithUserID(f, "explicit")); got != "explicit" {
+		t.Fatalf("UserID = %q, want explicit", got)
+	}
+}
+
+func TestWithUserIDAppearsInLog(t *testing.T) {
+	buf := captureLogs(t)
+	logus.LogContext(logus.WithUserID(context.Background(), "u-7"), logus.LevelInfo, "x")
+	if got := buf.last(t)["user_id"]; got != "u-7" {
+		t.Fatalf("user_id = %v", got)
+	}
+}
+
+func TestLevelAndCtxKeysAreAliasesOfCore(t *testing.T) {
+	// Passing across the two names without conversion proves a type alias.
+	viaCore := func(l core.Level) logus.Level { return l }
+	viaPublic := func(l logus.Level) core.Level { return l }
+	if viaCore(core.LevelWarn) != logus.LevelWarn || viaPublic(logus.LevelError) != core.LevelError {
+		t.Fatal("alias values differ")
 	}
 }
 
 func TestServerIPAndNodeFields(t *testing.T) {
-	t.Run("set", func(t *testing.T) {
-		buf := captureLogs(t)
-		t.Setenv("ServerIP", "10.0.0.1")
-		t.Setenv("NODE", "api-1")
-		logus.WriteLog(logus.LogLevelInfo, "x")
-		m := buf.last(t)
-		if m["server_ip"] != "10.0.0.1" || m["node"] != "api-1" {
-			t.Fatalf("got server_ip=%v node=%v", m["server_ip"], m["node"])
-		}
-	})
-	t.Run("unset", func(t *testing.T) {
-		buf := captureLogs(t)
-		unsetEnv(t, "ServerIP")
-		unsetEnv(t, "NODE")
-		logus.WriteLog(logus.LogLevelInfo, "x")
-		m := buf.last(t)
-		if _, ok := m["node"]; ok {
-			t.Fatal("node key should be absent")
-		}
-		if v, ok := m["server_ip"]; !ok || v != "" {
-			t.Fatalf("server_ip = %v (present=%v), want empty string", v, ok)
-		}
-	})
+	cases := []struct {
+		name         string
+		env          []string
+		wantIP, node *string
+	}{
+		{"SERVER_IP and NODE", []string{"SERVER_IP=10.0.0.1", "NODE=api-1"}, str("10.0.0.1"), str("api-1")},
+		{"legacy ServerIP", []string{"ServerIP=10.0.0.2"}, str("10.0.0.2"), nil},
+		{"SERVER_IP wins", []string{"SERVER_IP=10.0.0.1", "ServerIP=10.9.9.9"}, str("10.0.0.1"), nil},
+		{"unset omits both", nil, nil, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			lines := runChildEnv(t, "oneline", "json", str("trace"), c.env...)
+			if len(lines) != 1 {
+				t.Fatalf("lines = %q", lines)
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(lines[0]), &m); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range map[string]*string{"server_ip": c.wantIP, "node": c.node} {
+				got, present := m[key]
+				if want == nil && present {
+					t.Errorf("%s present (%v), want omitted", key, got)
+				}
+				if want != nil && got != *want {
+					t.Errorf("%s = %v, want %q", key, got, *want)
+				}
+			}
+		})
+	}
 }
 
 func TestSourceAttributionPointsAtCaller(t *testing.T) {
 	var wantLine int
 	calls := map[string]func(){
-		"WriteLog": func() {
+		"Log": func() {
 			_, _, markLine, _ := runtime.Caller(0)
 			wantLine = markLine + 2 // the call sits two lines below the mark
-			logus.WriteLog(logus.LogLevelInfo, "x")
+			logus.Log(logus.LevelInfo, "x")
 		},
-		"WriteLogWithContext": func() {
+		"Logf": func() {
+			_, _, markLine, _ := runtime.Caller(0)
+			wantLine = markLine + 2
+			logus.Logf(logus.LevelInfo, "x %d", 1)
+		},
+		"LogContextf": func() {
+			_, _, markLine, _ := runtime.Caller(0)
+			wantLine = markLine + 2
+			logus.LogContextf(context.Background(), logus.LevelInfo, "x %d", 1)
+		},
+		"LogContext": func() {
 			_, _, markLine, _ := runtime.Caller(0)
 			wantLine = markLine + 2 // the call sits two lines below the mark
-			logus.WriteLogWithContext(context.Background(), logus.LogLevelInfo, "x")
+			logus.LogContext(context.Background(), logus.LevelInfo, "x")
 		},
 	}
 	for name, call := range calls {
@@ -256,20 +329,10 @@ func TestSourceAttributionPointsAtCaller(t *testing.T) {
 	}
 }
 
-func TestLogIDFromMetadata(t *testing.T) {
-	buf := captureLogs(t)
-	ctx := logus.WithLogMetadata(logus.WithRequestID(context.Background(), uuid.New()), "log-1", "user-1")
-	logus.WriteLogWithContext(ctx, logus.LogLevelInfo, "x")
-	m := buf.last(t)
-	if m["log_id"] != "log-1" || m["user_id"] != "user-1" {
-		t.Fatalf("got log_id=%v user_id=%v", m["log_id"], m["user_id"])
-	}
-}
-
 func TestLogIDFallsBackToRequestID(t *testing.T) {
 	buf := captureLogs(t)
 	id := uuid.New()
-	logus.WriteLogWithContext(logus.WithRequestID(context.Background(), id), logus.LogLevelInfo, "x")
+	logus.LogContext(logus.WithRequestID(context.Background(), id), logus.LevelInfo, "x")
 	if got := buf.last(t)["log_id"]; got != id.String() {
 		t.Fatalf("log_id = %v, want %v", got, id)
 	}
@@ -279,12 +342,12 @@ func TestUserIDFromGetter(t *testing.T) {
 	buf := captureLogs(t)
 	f := newFakeGinContext()
 	f.Set(logus.CtxKeyUserID, "user-9")
-	logus.WriteLogWithContext(f, logus.LogLevelInfo, "x")
+	logus.LogContext(f, logus.LevelInfo, "x")
 	m := buf.last(t)
 	if m["user_id"] != "user-9" {
 		t.Fatalf("user_id = %v", m["user_id"])
 	}
-	stored, _ := f.Get(logus.CtxKeyID)
+	stored, _ := f.Get(logus.CtxKeyRequestID)
 	if m["log_id"] != fmt.Sprint(stored) || m["log_id"] == "" {
 		t.Fatalf("log_id = %v, stored = %v", m["log_id"], stored)
 	}
@@ -294,12 +357,12 @@ func TestUserIDFromAnyKeyContext(t *testing.T) {
 	buf := captureLogs(t)
 	f := newFakeAnyKeyContext()
 	f.Set(logus.CtxKeyUserID, "user-9")
-	logus.WriteLogWithContext(f, logus.LogLevelInfo, "x")
+	logus.LogContext(f, logus.LevelInfo, "x")
 	m := buf.last(t)
 	if m["user_id"] != "user-9" {
 		t.Fatalf("user_id = %v", m["user_id"])
 	}
-	stored, _ := f.Get(logus.CtxKeyID)
+	stored, _ := f.Get(logus.CtxKeyRequestID)
 	if m["log_id"] != fmt.Sprint(stored) || m["log_id"] == "" {
 		t.Fatalf("log_id = %v, stored = %v", m["log_id"], stored)
 	}
@@ -307,7 +370,7 @@ func TestUserIDFromAnyKeyContext(t *testing.T) {
 
 func TestNoUserIDFieldWhenAbsent(t *testing.T) {
 	buf := captureLogs(t)
-	logus.WriteLogWithContext(context.Background(), logus.LogLevelInfo, "x")
+	logus.LogContext(context.Background(), logus.LevelInfo, "x")
 	m := buf.last(t)
 	if _, ok := m["user_id"]; ok {
 		t.Fatal("user_id should be absent")
@@ -320,27 +383,13 @@ func TestNoUserIDFieldWhenAbsent(t *testing.T) {
 func TestNilContextDoesNotPanic(t *testing.T) {
 	buf := captureLogs(t)
 	//nolint:staticcheck // nil context is deliberately tolerated
-	logus.WriteLogWithContext(nil, logus.LogLevelInfo, "x")
+	logus.LogContext(nil, logus.LevelInfo, "x")
 	m := buf.last(t)
 	if m["msg"] != "x" {
 		t.Fatalf("msg = %v", m["msg"])
 	}
 	if _, ok := m["log_id"]; ok {
 		t.Fatal("log_id should be absent for nil context")
-	}
-}
-
-func TestWithLogMetadata(t *testing.T) {
-	buf := captureLogs(t)
-	//nolint:staticcheck // nil context is deliberately tolerated
-	if ctx := logus.WithLogMetadata(nil, "l", "u"); ctx == nil {
-		t.Fatal("nil ctx result")
-	}
-	ctx := logus.WithLogMetadata(logus.WithLogMetadata(context.Background(), "l", "u"), "", "")
-	logus.WriteLogWithContext(ctx, logus.LogLevelInfo, "x")
-	m := buf.last(t)
-	if m["log_id"] != "l" || m["user_id"] != "u" {
-		t.Fatalf("got log_id=%v user_id=%v", m["log_id"], m["user_id"])
 	}
 }
 
@@ -383,7 +432,7 @@ func TestRequestIDPrefersTypedContextValue(t *testing.T) {
 func TestRequestIDReadsUUIDFromGetter(t *testing.T) {
 	a := uuid.New()
 	f := newFakeGinContext()
-	f.Set(logus.CtxKeyID, a)
+	f.Set(logus.CtxKeyRequestID, a)
 	if got := logus.RequestID(f); got != a {
 		t.Fatalf("got %v, want %v", got, a)
 	}
@@ -392,7 +441,7 @@ func TestRequestIDReadsUUIDFromGetter(t *testing.T) {
 func TestRequestIDParsesStringFromGetter(t *testing.T) {
 	a := uuid.New()
 	f := newFakeGinContext()
-	f.Set(logus.CtxKeyID, a.String())
+	f.Set(logus.CtxKeyRequestID, a.String())
 	if got := logus.RequestID(f); got != a {
 		t.Fatalf("got %v, want %v", got, a)
 	}
@@ -401,7 +450,7 @@ func TestRequestIDParsesStringFromGetter(t *testing.T) {
 func TestRequestIDReadsPlainStringKey(t *testing.T) {
 	a := uuid.New()
 	//nolint:staticcheck // plain string key is a supported lookup under test
-	ctx := context.WithValue(context.Background(), logus.CtxKeyID, a)
+	ctx := context.WithValue(context.Background(), logus.CtxKeyRequestID, a)
 	if got := logus.RequestID(ctx); got != a {
 		t.Fatalf("got %v, want %v", got, a)
 	}
@@ -413,7 +462,7 @@ func TestRequestIDGeneratesAndStoresInSetter(t *testing.T) {
 	if got == uuid.Nil {
 		t.Fatal("expected generated id")
 	}
-	if v, _ := f.Get(logus.CtxKeyID); v != got {
+	if v, _ := f.Get(logus.CtxKeyRequestID); v != got {
 		t.Fatalf("stored %v, want %v", v, got)
 	}
 	if again := logus.RequestID(f); again != got {
@@ -423,12 +472,12 @@ func TestRequestIDGeneratesAndStoresInSetter(t *testing.T) {
 
 func TestRequestIDReplacesInvalidStoredString(t *testing.T) {
 	f := newFakeGinContext()
-	f.Set(logus.CtxKeyID, "not-a-uuid")
+	f.Set(logus.CtxKeyRequestID, "not-a-uuid")
 	got := logus.RequestID(f)
 	if got == uuid.Nil {
 		t.Fatal("expected generated id")
 	}
-	if v, _ := f.Get(logus.CtxKeyID); v != got {
+	if v, _ := f.Get(logus.CtxKeyRequestID); v != got {
 		t.Fatalf("stored %v, want %v", v, got)
 	}
 }
@@ -456,12 +505,12 @@ func TestRequestIDTreatsStoredNilUUIDAsMissing(t *testing.T) {
 	})
 	t.Run("getter value", func(t *testing.T) {
 		f := newFakeGinContext()
-		f.Set(logus.CtxKeyID, uuid.Nil)
+		f.Set(logus.CtxKeyRequestID, uuid.Nil)
 		got := logus.RequestID(f)
 		if got == uuid.Nil {
 			t.Fatal("expected generated id")
 		}
-		if v, _ := f.Get(logus.CtxKeyID); v != got {
+		if v, _ := f.Get(logus.CtxKeyRequestID); v != got {
 			t.Fatalf("stored %v, want %v", v, got)
 		}
 	})
@@ -473,7 +522,7 @@ func TestRequestIDStoresGeneratedIDOnAnyKeyContext(t *testing.T) {
 	if got == uuid.Nil {
 		t.Fatal("expected generated id")
 	}
-	if v, _ := f.Get(logus.CtxKeyID); v != got {
+	if v, _ := f.Get(logus.CtxKeyRequestID); v != got {
 		t.Fatalf("stored %v, want %v", v, got)
 	}
 	if again := logus.RequestID(f); again != got {
@@ -484,21 +533,21 @@ func TestRequestIDStoresGeneratedIDOnAnyKeyContext(t *testing.T) {
 func TestRequestIDReadsFromAnyKeyContext(t *testing.T) {
 	a := uuid.New()
 	f := newFakeAnyKeyContext()
-	f.Set(logus.CtxKeyID, a)
+	f.Set(logus.CtxKeyRequestID, a)
 	if got := logus.RequestID(f); got != a {
 		t.Fatalf("uuid value: got %v, want %v", got, a)
 	}
 
 	b := uuid.New()
 	g := newFakeAnyKeyContext()
-	g.Set(logus.CtxKeyID, b.String())
+	g.Set(logus.CtxKeyRequestID, b.String())
 	if got := logus.RequestID(g); got != b {
 		t.Fatalf("string value: got %v, want %v", got, b)
 	}
 }
 
-// // helperEnv selects a child-process mode: LOG_LEVEL and LOG_FORMAT are read once
-// // per process, so such tests re-run the binary and inspect its stdout.
+// helperEnv selects a child-process mode: LOG_LEVEL and LOG_FORMAT are read once
+// per process, so such tests re-run the binary and inspect its stdout.
 const helperEnv = "LOGUS_TEST_HELPER"
 
 type levelCase struct {
@@ -507,8 +556,8 @@ type levelCase struct {
 }
 
 var allLevels = []levelCase{
-	{logus.LogLevelTrace, "TRACE"}, {logus.LogLevelDebug, "DEBUG"}, {logus.LogLevelInfo, "INFO"},
-	{logus.LogLevelWarn, "WARN"}, {logus.LogLevelError, "ERROR"}, {logus.LogLevelFatal, "FATAL"},
+	{logus.LevelTrace, "TRACE"}, {logus.LevelDebug, "DEBUG"}, {logus.LevelInfo, "INFO"},
+	{logus.LevelWarn, "WARN"}, {logus.LevelError, "ERROR"}, {logus.LevelFatal, "FATAL"},
 }
 
 // runHelper is the child side: it writes one probe line per level.
@@ -518,8 +567,8 @@ func runHelper(mode string) {
 			write(lc.level, "probe-"+lc.name)
 		}
 	}
-	plain := func(l logus.Level, msg string) { logus.WriteLog(l, msg) }
-	withCtx := func(l logus.Level, msg string) { logus.WriteLogWithContext(context.Background(), l, msg) }
+	plain := func(l logus.Level, msg string) { logus.Log(l, msg) }
+	withCtx := func(l logus.Level, msg string) { logus.LogContext(context.Background(), l, msg) }
 	switch mode {
 	case "levels":
 		probe(plain)
@@ -529,14 +578,16 @@ func runHelper(mode string) {
 		probe(plain)
 		probe(withCtx)
 	case "setlevel-first":
-		logus.SetLevel(logus.LogLevelDebug)
+		logus.SetLevel(logus.LevelDebug)
 		probe(plain)
+	case "oneline":
+		logus.Log(logus.LevelInfo, "x")
 	case "getlevel":
 		fmt.Println(logus.GetLevel())
 	case "readonce":
-		logus.WriteLog(logus.LogLevelDebug, "probe-first")
+		logus.Log(logus.LevelDebug, "probe-first")
 		_ = os.Setenv("LOG_LEVEL", "trace")
-		logus.WriteLog(logus.LogLevelDebug, "probe-second")
+		logus.Log(logus.LevelDebug, "probe-second")
 	}
 }
 
@@ -544,13 +595,22 @@ func runHelper(mode string) {
 // caller. A nil level leaves LOG_LEVEL unset.
 func runChild(t *testing.T, mode, format string, level *string) []string {
 	t.Helper()
+	return runChildEnv(t, mode, format, level)
+}
+
+// runChildEnv is runChild with extra environment entries; SERVER_IP, ServerIP
+// and NODE are cleared first so the child sees only what the caller passes.
+func runChildEnv(t *testing.T, mode, format string, level *string, extra ...string) []string {
+	t.Helper()
 	var env []string
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "LOG_LEVEL=") || strings.HasPrefix(kv, "LOG_FORMAT=") || strings.HasPrefix(kv, helperEnv+"=") {
+		if strings.HasPrefix(kv, "SERVER_IP=") || strings.HasPrefix(kv, "ServerIP=") || strings.HasPrefix(kv, "NODE=") ||
+			strings.HasPrefix(kv, "LOG_LEVEL=") || strings.HasPrefix(kv, "LOG_FORMAT=") || strings.HasPrefix(kv, helperEnv+"=") {
 			continue
 		}
 		env = append(env, kv)
 	}
+	env = append(env, extra...)
 	env = append(env, helperEnv+"="+mode, "LOG_FORMAT="+format)
 	if level != nil {
 		env = append(env, "LOG_LEVEL="+*level)
@@ -628,16 +688,16 @@ func TestPublicLevelValuesAlignWithSlogAndCore(t *testing.T) {
 		core  core.Level
 		value int
 	}{
-		{logus.LogLevelTrace, -8, core.LevelTrace, -8}, {logus.LogLevelDebug, slog.LevelDebug, core.LevelDebug, -4},
-		{logus.LogLevelInfo, slog.LevelInfo, core.LevelInfo, 0}, {logus.LogLevelWarn, slog.LevelWarn, core.LevelWarn, 4},
-		{logus.LogLevelError, slog.LevelError, core.LevelError, 8}, {logus.LogLevelFatal, 12, core.LevelFatal, 12},
+		{logus.LevelTrace, -8, core.LevelTrace, -8}, {logus.LevelDebug, slog.LevelDebug, core.LevelDebug, -4},
+		{logus.LevelInfo, slog.LevelInfo, core.LevelInfo, 0}, {logus.LevelWarn, slog.LevelWarn, core.LevelWarn, 4},
+		{logus.LevelError, slog.LevelError, core.LevelError, 8}, {logus.LevelFatal, 12, core.LevelFatal, 12},
 	}
 	for _, w := range want {
 		if int(w.got) != w.value || slog.Level(w.got) != w.slog || int(w.core) != w.value {
 			t.Errorf("%v: public=%d slog=%d core=%d, want %d", w.got, int(w.got), int(w.slog), int(w.core), w.value)
 		}
 	}
-	for _, p := range [][2]any{{logus.CtxKeyID, core.CtxKeyID}, {logus.CtxKeyUserID, core.CtxKeyUserID}} {
+	for _, p := range [][2]any{{logus.CtxKeyRequestID, core.CtxKeyRequestID}, {logus.CtxKeyUserID, core.CtxKeyUserID}} {
 		if p[0] != p[1] {
 			t.Errorf("public %v != core %v", p[0], p[1])
 		}
@@ -688,7 +748,7 @@ func TestThresholdWritesLevelsAtOrAbove(t *testing.T) {
 	}{
 		{str("trace"), "TRACE"}, {str("debug"), "DEBUG"}, {str("info"), "INFO"},
 		{str("warn"), "WARN"}, {str("error"), "ERROR"}, {str("fatal"), "FATAL"},
-		{nil, "INFO"},
+		{nil, "INFO"}, {str(""), "INFO"}, {str("   "), "INFO"},
 	}
 	for _, mode := range []string{"levels", "levels-ctx"} {
 		for _, c := range cases {
@@ -732,7 +792,7 @@ func TestLogLevelParsing(t *testing.T) {
 }
 
 func TestUnknownLogLevelFallsBackToInfoWithOneWarning(t *testing.T) {
-	for _, env := range []string{"verbose", "7", "-1", "", "   ", "3.5"} {
+	for _, env := range []string{"verbose", "7", "-1", "3.5"} {
 		t.Run(fmt.Sprintf("%q", env), func(t *testing.T) {
 			t.Parallel()
 			levels, msgs := jsonRecords(t, "twice", str(env))
@@ -777,7 +837,7 @@ func TestSetLevelBeforeFirstLogBeatsEnv(t *testing.T) {
 }
 
 func TestSetLevelChangesThresholdImmediately(t *testing.T) {
-	t.Cleanup(func() { logus.SetLevel(logus.LogLevelTrace) })
+	t.Cleanup(func() { logus.SetLevel(logus.LevelTrace) })
 	buf := captureLogs(t)
 	for _, from := range allLevels {
 		logus.SetLevel(from.level)
@@ -786,7 +846,7 @@ func TestSetLevelChangesThresholdImmediately(t *testing.T) {
 		}
 		buf.reset()
 		for _, lc := range allLevels {
-			logus.WriteLog(lc.level, "probe-"+lc.name)
+			logus.Log(lc.level, "probe-"+lc.name)
 		}
 		lines := buf.lines()
 		msgs := make([]string, 0, len(lines))
@@ -804,7 +864,7 @@ func TestSetLevelChangesThresholdImmediately(t *testing.T) {
 }
 
 func TestSetLevelIsSafeForConcurrentUse(t *testing.T) {
-	t.Cleanup(func() { logus.SetLevel(logus.LogLevelTrace) })
+	t.Cleanup(func() { logus.SetLevel(logus.LevelTrace) })
 	var wg sync.WaitGroup
 	for g := 0; g < 4; g++ {
 		wg.Add(2)
@@ -818,8 +878,8 @@ func TestSetLevelIsSafeForConcurrentUse(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 200; i++ {
-				logus.WriteLog(allLevels[i%len(allLevels)].level, "race")
-				logus.WriteLogWithContext(context.Background(), logus.LogLevelFatal, "race")
+				logus.Log(allLevels[i%len(allLevels)].level, "race")
+				logus.LogContext(context.Background(), logus.LevelFatal, "race")
 			}
 		}()
 	}
@@ -832,11 +892,11 @@ func TestFatalOnlyLabelsAndReturns(t *testing.T) {
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				t.Errorf("WriteLog(Fatal) panicked: %v", r)
+				t.Errorf("Log(Fatal) panicked: %v", r)
 			}
 		}()
-		logus.WriteLog(logus.LogLevelFatal, "unrecoverable")
-		logus.WriteLogWithContext(context.Background(), logus.LogLevelFatal, "unrecoverable too")
+		logus.Log(logus.LevelFatal, "unrecoverable")
+		logus.LogContext(context.Background(), logus.LevelFatal, "unrecoverable too")
 		returned = true
 	}()
 	if !returned {
@@ -853,10 +913,89 @@ func TestFatalOnlyLabelsAndReturns(t *testing.T) {
 
 func TestUnknownLevelValueIsIgnored(t *testing.T) {
 	buf := captureLogs(t)
-	logus.WriteLog(logus.Level(999), "x")
-	logus.WriteLog(logus.Level(-1), "x")
-	logus.WriteLog(logus.Level(5), "x")
+	logus.Log(logus.Level(999), "x")
+	logus.Log(logus.Level(-1), "x")
+	logus.Log(logus.Level(5), "x")
 	if len(buf.lines()) != 0 {
 		t.Fatalf("expected no output, got %q", strings.Join(buf.lines(), "\n"))
+	}
+}
+
+func TestInvalidLogFormatWarnsOnceAndFallsBackToJSON(t *testing.T) {
+	lines := runChild(t, "levels", "bogus", str("trace"))
+	warns := 0
+	probes := 0
+	for _, line := range lines {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("fallback output is not JSON: %q", line)
+		}
+		msg := fmt.Sprint(m["msg"])
+		if strings.Contains(msg, "LOG_FORMAT") {
+			warns++
+			if m["level"] != "WARN" {
+				t.Errorf("warning level = %v, want WARN", m["level"])
+			}
+		}
+		if strings.HasPrefix(msg, "probe-") {
+			probes++
+		}
+	}
+	if warns != 1 || probes != len(allLevels) {
+		t.Fatalf("warnings=%d probes=%d, lines=%q", warns, probes, lines)
+	}
+}
+
+func TestSetOutputRedirectsLines(t *testing.T) {
+	var buf bytes.Buffer
+	logus.SetOutput(&buf)
+	t.Cleanup(func() { logus.SetOutput(logFile) })
+	logus.Log(logus.LevelInfo, "to buffer")
+	logus.LogContext(context.Background(), logus.LevelInfo, "again")
+	if n := strings.Count(buf.String(), "\n"); n != 2 || !strings.Contains(buf.String(), "to buffer") {
+		t.Fatalf("buffer = %q", buf.String())
+	}
+}
+
+func TestSetFormatSwitchesFormat(t *testing.T) {
+	var buf bytes.Buffer
+	logus.SetOutput(&buf)
+	t.Cleanup(func() { logus.SetOutput(logFile); logus.SetFormat("json") })
+	logus.SetFormat("string")
+	logus.Log(logus.LevelInfo, "compact")
+	if line := buf.String(); strings.HasPrefix(line, "{") || !strings.Contains(line, "[INFO]") {
+		t.Fatalf("not string format: %q", line)
+	}
+}
+
+func TestSetLevelRejectsValuesOutsideTheSix(t *testing.T) {
+	t.Cleanup(func() { logus.SetLevel(logus.LevelTrace) })
+	logus.SetLevel(logus.LevelWarn)
+	for _, bad := range []logus.Level{-1, 3, 5, 999, -9} {
+		logus.SetLevel(bad)
+		if got := logus.GetLevel(); got != logus.LevelWarn {
+			t.Fatalf("SetLevel(%d) changed level to %v", int(bad), got)
+		}
+	}
+}
+
+func TestControlCharactersCannotForgeLinesInAnyFormat(t *testing.T) {
+	t.Cleanup(func() { logus.SetOutput(logFile); logus.SetFormat("json") })
+	ctx := logus.WithUserID(context.Background(), "u\nFORGED")
+	for _, format := range []string{"json", "text", "string"} {
+		t.Run(format, func(t *testing.T) {
+			var buf bytes.Buffer
+			logus.SetOutput(&buf)
+			logus.SetFormat(format)
+			logus.Log(logus.LevelInfo, "first\r\nFORGED line\x1b[31m")
+			logus.LogContextf(ctx, logus.LevelInfo, "second\n%s", "FORGED too")
+			lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+			if len(lines) != 2 {
+				t.Fatalf("lines = %d, want 2: %q", len(lines), buf.String())
+			}
+			if strings.ContainsAny(buf.String(), "\r\x1b") {
+				t.Fatalf("raw control character in %q", buf.String())
+			}
+		})
 	}
 }
