@@ -4,6 +4,8 @@ Small structured logging module for Go services, built on `log/slog`. It writes 
 
 ## Installation
 
+Requires Go 1.27 or newer.
+
 ```bash
 go get github.com/zazhedho/logus
 ```
@@ -86,7 +88,7 @@ current := logus.GetLevel() // LogLevelDebug
 
 ### Output formats
 
-`string` produces lines such as:
+`json` and `text` write `time`, `level` and `msg` plus these attributes: `server_ip`, `source_file`, `source_line`, `source_function`, `node` (only when set), `log_id` (for non-nil contexts) and `user_id` (only when known). `string` produces lines such as:
 
 ```
 2026/01/02 03:04:05 .123456 [10.0.0.1][api][WARN][log-id][user-id][path/file.go:12] message
@@ -96,6 +98,7 @@ The user id and source segments are omitted when empty. The log id segment is pr
 
 ## Known behavior
 
+- `ServerIP` and `NODE` are read on every call; `LOG_LEVEL` and `LOG_FORMAT` only once.
 - Contexts exposing either `Get(string)`/`Set(string, any)` or `Get(any)`/`Set(any, any)` (the latter is `*gin.Context` in current gin) are recognized without importing gin, using the keys `CTX_ID` for the request id and `userId` for the user id.
 - `log_id` is always written for non-nil contexts, including `WriteLog` (which uses `context.Background()`). When no log id or request id is stored, a new id is generated per call, so consecutive `WriteLog` lines get different ids.
 - A stored request id equal to the nil UUID is treated as missing and replaced with a newly generated id.
@@ -108,8 +111,24 @@ The user id and source segments are omitted when empty. The log id segment is pr
 - The default is now `info` for both functions (it was 5 and 6, which logged debug for `WriteLogWithContext`).
 - `LOG_LEVEL` is read once, not on every call; use `SetLevel` to change it at runtime.
 
+## Versioning
+
+logus follows semantic versioning. While it is pre-1.0, a minor version bump (v0.2.0 to v0.3.0) may contain breaking changes; a patch release (v0.2.0 to v0.2.1) never does. Pin the minor version and read the release notes before upgrading.
+
+## Development
+
+```bash
+make test         # go test -race ./...
+make lint-install # one-time: installs golangci-lint
+make lint         # golangci-lint with .golangci.yml
+```
+
 ## Layout
 
 The repository root holds only the public API (`logus.go`) and its tests. The
 implementation lives under `internal/core` and is not importable by other
 modules.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
