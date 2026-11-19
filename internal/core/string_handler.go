@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 type stringHandler struct {
@@ -118,34 +119,41 @@ func (h *stringHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
-// escapeControl makes s safe to embed in a single log line: \r, \n, \t and
-// every other control character (including DEL, NEL and the Unicode line and
-// paragraph separators) are replaced by a visible escape sequence.
+// escapeControl makes s safe to embed in one log line, and reversibly so.
+// A backslash becomes `\\`; \n, \r and \t become their two-character forms;
+// other control characters become \xNN; bidi overrides, zero-width and other
+// format characters (Unicode category Cf) and the Unicode line and paragraph
+// separators become \uNNNN (or \UNNNNNNNN beyond the BMP). Invalid UTF-8 bytes
+// become U+FFFD.
 func escapeControl(s string) string {
-	if !strings.ContainsFunc(s, isControl) {
+	if utf8.ValidString(s) && !strings.ContainsFunc(s, isEscapable) {
 		return s
 	}
 	var b strings.Builder
 	b.Grow(len(s) + 8)
-	for _, r := range s {
+	for _, r := range s { // an invalid byte is yielded as utf8.RuneError
 		switch {
+		case r == '\\':
+			b.WriteString(`\\`)
 		case r == '\n':
 			b.WriteString(`\n`)
 		case r == '\r':
 			b.WriteString(`\r`)
 		case r == '\t':
 			b.WriteString(`\t`)
-		case r < 0x100 && isControl(r):
+		case !isEscapable(r):
+			b.WriteRune(r)
+		case r < 0x100:
 			fmt.Fprintf(&b, `\x%02x`, r)
-		case isControl(r):
+		case r < 0x10000:
 			fmt.Fprintf(&b, `\u%04x`, r)
 		default:
-			b.WriteRune(r)
+			fmt.Fprintf(&b, `\U%08x`, r)
 		}
 	}
 	return b.String()
 }
 
-func isControl(r rune) bool {
-	return unicode.IsControl(r) || r == 0x2028 || r == 0x2029
+func isEscapable(r rune) bool {
+	return r == '\\' || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029
 }
