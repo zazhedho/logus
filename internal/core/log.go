@@ -13,41 +13,73 @@ import (
 	"sync"
 )
 
-type logIDContextKey struct{}
 type userIDContextKey struct{}
 
 // callerSkip counts frames from callerAttrs to the user code: callerAttrs,
-// Log, the public logus function, the caller. Public entry points must call Log directly.
-const callerSkip = 3
+// emit, Log (or Logf), the public logus function, the caller. Public entry
+// points must call Log or Logf directly.
+const callerSkip = 4
 
-// WithLogMetadata returns a copy of ctx carrying an explicit log id and user
-// id. Empty values do not overwrite existing ones.
-func WithLogMetadata(ctx context.Context, logID, userID string) context.Context {
+// WithUserID returns a copy of ctx carrying the user id. A nil ctx is treated
+// as context.Background().
+func WithUserID(ctx context.Context, userID string) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if logID != "" {
-		ctx = context.WithValue(ctx, logIDContextKey{}, logID)
-	}
-	if userID != "" {
-		ctx = context.WithValue(ctx, userIDContextKey{}, userID)
-	}
-	return ctx
+	return context.WithValue(ctx, userIDContextKey{}, userID)
 }
 
-// Log writes one line when level is at or above the threshold; unknown levels
-// are ignored. Call it directly from the public function (see callerSkip).
-func Log(ctx context.Context, level Level, msg ...any) {
+// UserID returns the id stored by WithUserID or, failing that, the value under
+// the gin-style key CtxKeyUserID. It is empty when neither is present.
+func UserID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if id, ok := ctx.Value(userIDContextKey{}).(string); ok && id != "" {
+		return id
+	}
+	if value, exists := ctxGet(ctx, CtxKeyUserID); exists {
+		return interfaceString(value)
+	}
+	return ""
+}
+
+// enabled reports whether a line at level would be written.
+func enabled(level Level) bool {
 	if !level.valid() {
-		return
+		return false
 	}
-
-	logger := getLogger()
+	getLogger()
 	ensureLevel()
-	if level < Level(levelVar.Level()) {
+	return level >= Level(levelVar.Level())
+}
+
+// joinArgs formats args like fmt.Sprint but always separates operands with a
+// single space.
+func joinArgs(args []any) string {
+	return strings.TrimSuffix(fmt.Sprintln(args...), "\n")
+}
+
+// Log writes args joined by single spaces when level is at or above the
+// threshold; unknown levels are ignored. Call it directly from the public
+// function (see callerSkip).
+func Log(ctx context.Context, level Level, args ...any) {
+	if !enabled(level) {
 		return
 	}
+	emit(ctx, level, joinArgs(args))
+}
 
+// Logf is Log with a fmt.Sprintf-style message. Call it directly from the
+// public function (see callerSkip).
+func Logf(ctx context.Context, level Level, format string, args ...any) {
+	if !enabled(level) {
+		return
+	}
+	emit(ctx, level, fmt.Sprintf(format, args...))
+}
+
+func emit(ctx context.Context, level Level, msg string) {
 	st := getStatic()
 	attrs := make([]slog.Attr, 0, 8)
 	if st.serverIP != "" {
@@ -57,25 +89,12 @@ func Log(ctx context.Context, level Level, msg ...any) {
 	if st.node != "" {
 		attrs = append(attrs, slog.String("node", st.node))
 	}
-
 	if ctx != nil {
-		logID := interfaceString(ctx.Value(logIDContextKey{}))
-		if logID == "" {
-			logID = RequestID(ctx).String()
-		}
-		attrs = append(attrs, slog.String("log_id", logID))
-
-		userID := interfaceString(ctx.Value(userIDContextKey{}))
-		if userID == "" {
-			if value, exists := ctxGet(ctx, CtxKeyUserID); exists {
-				userID = interfaceString(value)
-			}
-		}
-		if userID != "" {
+		attrs = append(attrs, slog.String("log_id", RequestID(ctx).String()))
+		if userID := UserID(ctx); userID != "" {
 			attrs = append(attrs, slog.String("user_id", userID))
 		}
 	}
-
 	logCtx := ctx
 	if logCtx == nil {
 		logCtx = context.Background()
@@ -84,8 +103,7 @@ func Log(ctx context.Context, level Level, msg ...any) {
 	for _, attr := range attrs {
 		fields = append(fields, attr)
 	}
-
-	logger.Log(logCtx, slog.Level(level), fmt.Sprint(msg...), fields...)
+	getLogger().Log(logCtx, slog.Level(level), msg, fields...)
 }
 
 func callerAttrs(skip int, wd string) []slog.Attr {

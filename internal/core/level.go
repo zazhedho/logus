@@ -14,7 +14,7 @@ import (
 type Level int
 
 // The six standard levels, ordered trace < debug < info < warn < error < fatal.
-// The public logus package mirrors these values as its LogLevel constants.
+// The public logus package re-exports them.
 const (
 	LevelTrace Level = -8
 	LevelDebug Level = -4

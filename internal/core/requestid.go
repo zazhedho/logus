@@ -6,11 +6,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// Gin-style context keys. The public logus package mirrors these values as
-// CtxKeyID and CtxKeyUserID.
+// Gin-style context keys. The public logus package re-exports them.
 const (
-	CtxKeyID     = "CTX_ID"
-	CtxKeyUserID = "userId"
+	CtxKeyRequestID = "CTX_ID"
+	CtxKeyUserID    = "userId"
 )
 
 type requestIDKey struct{}
@@ -72,7 +71,7 @@ func RequestIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 }
 
 // RequestID resolves the id from WithRequestID, a Get method or a string key
-// CtxKeyID (uuid.UUID or parsable string). Otherwise it generates one and
+// CtxKeyRequestID (uuid.UUID or parsable string). Otherwise it generates one and
 // stores it via ctx.Set when available.
 func RequestID(ctx context.Context) uuid.UUID {
 	if ctx == nil {
@@ -81,18 +80,18 @@ func RequestID(ctx context.Context) uuid.UUID {
 	if id, ok := RequestIDFromContext(ctx); ok {
 		return id
 	}
-	if v, found := ctxGet(ctx, CtxKeyID); found {
+	if v, found := ctxGet(ctx, CtxKeyRequestID); found {
 		if id, ok := toUUID(v); ok {
 			return id
 		}
 	}
 	//nolint:staticcheck // plain string key kept for backward compatibility
-	if id, ok := toUUID(ctx.Value(CtxKeyID)); ok {
+	if id, ok := toUUID(ctx.Value(CtxKeyRequestID)); ok {
 		return id
 	}
 
 	id := newRequestID()
-	ctxSet(ctx, CtxKeyID, id)
+	ctxSet(ctx, CtxKeyRequestID, id)
 	return id
 }
 
