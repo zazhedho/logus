@@ -5,6 +5,7 @@ package logus
 
 import (
 	"context"
+	"io"
 
 	"github.com/google/uuid"
 
@@ -45,7 +46,8 @@ const (
 )
 
 // SetLevel changes the threshold at runtime. It is safe for concurrent use.
-// Called before the first log it takes precedence over LOG_LEVEL.
+// Called before the first log it takes precedence over LOG_LEVEL. A value that
+// is not one of the six levels is ignored and the threshold is left unchanged.
 func SetLevel(l Level) {
 	core.SetLevel(core.Level(l))
 }
@@ -54,6 +56,20 @@ func SetLevel(l Level) {
 // logger has not been used yet.
 func GetLevel() Level {
 	return Level(core.GetLevel())
+}
+
+// SetOutput redirects all log lines to w; nil restores os.Stdout. It is safe
+// for concurrent use and takes effect for subsequent lines.
+func SetOutput(w io.Writer) {
+	core.SetOutput(w)
+}
+
+// SetFormat selects the output format: "json", "text" or "string",
+// case-insensitive. An empty name means json; an unknown one falls back to json
+// and writes one warning. Called before the first log it takes precedence over
+// LOG_FORMAT.
+func SetFormat(format string) {
+	core.SetFormat(format)
 }
 
 // WriteLog logs at level with context.Background(), so log_id is freshly

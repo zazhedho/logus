@@ -1,6 +1,7 @@
 package logus_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -688,7 +689,7 @@ func TestThresholdWritesLevelsAtOrAbove(t *testing.T) {
 	}{
 		{str("trace"), "TRACE"}, {str("debug"), "DEBUG"}, {str("info"), "INFO"},
 		{str("warn"), "WARN"}, {str("error"), "ERROR"}, {str("fatal"), "FATAL"},
-		{nil, "INFO"},
+		{nil, "INFO"}, {str(""), "INFO"}, {str("   "), "INFO"},
 	}
 	for _, mode := range []string{"levels", "levels-ctx"} {
 		for _, c := range cases {
@@ -732,7 +733,7 @@ func TestLogLevelParsing(t *testing.T) {
 }
 
 func TestUnknownLogLevelFallsBackToInfoWithOneWarning(t *testing.T) {
-	for _, env := range []string{"verbose", "7", "-1", "", "   ", "3.5"} {
+	for _, env := range []string{"verbose", "7", "-1", "3.5"} {
 		t.Run(fmt.Sprintf("%q", env), func(t *testing.T) {
 			t.Parallel()
 			levels, msgs := jsonRecords(t, "twice", str(env))
@@ -858,5 +859,63 @@ func TestUnknownLevelValueIsIgnored(t *testing.T) {
 	logus.WriteLog(logus.Level(5), "x")
 	if len(buf.lines()) != 0 {
 		t.Fatalf("expected no output, got %q", strings.Join(buf.lines(), "\n"))
+	}
+}
+
+func TestInvalidLogFormatWarnsOnceAndFallsBackToJSON(t *testing.T) {
+	lines := runChild(t, "levels", "bogus", str("trace"))
+	warns := 0
+	probes := 0
+	for _, line := range lines {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("fallback output is not JSON: %q", line)
+		}
+		msg := fmt.Sprint(m["msg"])
+		if strings.Contains(msg, "LOG_FORMAT") {
+			warns++
+			if m["level"] != "WARN" {
+				t.Errorf("warning level = %v, want WARN", m["level"])
+			}
+		}
+		if strings.HasPrefix(msg, "probe-") {
+			probes++
+		}
+	}
+	if warns != 1 || probes != len(allLevels) {
+		t.Fatalf("warnings=%d probes=%d, lines=%q", warns, probes, lines)
+	}
+}
+
+func TestSetOutputRedirectsLines(t *testing.T) {
+	var buf bytes.Buffer
+	logus.SetOutput(&buf)
+	t.Cleanup(func() { logus.SetOutput(logFile) })
+	logus.WriteLog(logus.LogLevelInfo, "to buffer")
+	logus.WriteLogWithContext(context.Background(), logus.LogLevelInfo, "again")
+	if n := strings.Count(buf.String(), "\n"); n != 2 || !strings.Contains(buf.String(), "to buffer") {
+		t.Fatalf("buffer = %q", buf.String())
+	}
+}
+
+func TestSetFormatSwitchesFormat(t *testing.T) {
+	var buf bytes.Buffer
+	logus.SetOutput(&buf)
+	t.Cleanup(func() { logus.SetOutput(logFile); logus.SetFormat("json") })
+	logus.SetFormat("string")
+	logus.WriteLog(logus.LogLevelInfo, "compact")
+	if line := buf.String(); strings.HasPrefix(line, "{") || !strings.Contains(line, "[INFO]") {
+		t.Fatalf("not string format: %q", line)
+	}
+}
+
+func TestSetLevelRejectsValuesOutsideTheSix(t *testing.T) {
+	t.Cleanup(func() { logus.SetLevel(logus.LogLevelTrace) })
+	logus.SetLevel(logus.LogLevelWarn)
+	for _, bad := range []logus.Level{-1, 3, 5, 999, -9} {
+		logus.SetLevel(bad)
+		if got := logus.GetLevel(); got != logus.LogLevelWarn {
+			t.Fatalf("SetLevel(%d) changed level to %v", int(bad), got)
+		}
 	}
 }

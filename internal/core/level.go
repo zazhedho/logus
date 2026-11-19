@@ -95,20 +95,24 @@ func ensureLevel() {
 		level := LevelInfo
 		raw, set := os.LookupEnv("LOG_LEVEL")
 		valid := true
-		if set {
+		// An empty LOG_LEVEL counts as unset.
+		if set && strings.TrimSpace(raw) != "" {
 			level, valid = parseLevel(raw)
 		}
 		levelVar.Set(slog.Level(level))
 		if !valid {
-			getLogger().Warn(fmt.Sprintf("logus: unrecognized LOG_LEVEL %q, using info", raw),
-				slog.String("server_ip", getEnv("ServerIP", "")))
+			getLogger().Warn(fmt.Sprintf("logus: unrecognized LOG_LEVEL %q, using info", raw))
 		}
 	})
 }
 
 // SetLevel changes the threshold. It is safe for concurrent use and, when
 // called before the first log, takes precedence over LOG_LEVEL.
+// Values other than the six standard levels are ignored.
 func SetLevel(l Level) {
+	if !l.valid() {
+		return
+	}
 	levelOnce.Do(func() {})
 	levelVar.Set(slog.Level(l))
 }

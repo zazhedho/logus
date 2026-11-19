@@ -15,11 +15,9 @@ import (
 func captureLogs(t *testing.T, format string) *bytes.Buffer {
 	t.Helper()
 	buf := &bytes.Buffer{}
-	// Consume the once so getLogger never rebuilds over the captured logger.
-	loggerOnce.Do(func() {})
-	prev := appLogger
-	appLogger = newLogger(buf, format)
-	t.Cleanup(func() { appLogger = prev })
+	SetOutput(buf)
+	SetFormat(format)
+	t.Cleanup(func() { SetOutput(nil); SetFormat("") })
 	return buf
 }
 
@@ -89,5 +87,103 @@ func TestControlCharactersAreEscapedInEveryFormat(t *testing.T) {
 				t.Fatalf("unsafe output %q", out)
 			}
 		})
+	}
+}
+
+// resetState forgets the cached logger and level so the next call re-reads the
+// environment, and restores the defaults afterwards.
+func resetState(t *testing.T) {
+	t.Helper()
+	reset := func() {
+		logMu.Lock()
+		appLogger, logOut, logFormat = nil, nil, ""
+		logMu.Unlock()
+		levelOnce = sync.Once{}
+		levelVar.Set(0)
+	}
+	reset()
+	t.Cleanup(reset)
+}
+
+func TestSetOutputRedirectsLogger(t *testing.T) {
+	resetState(t)
+	var buf bytes.Buffer
+	SetOutput(&buf)
+	Log(context.Background(), LevelInfo, "hello")
+	if !strings.Contains(buf.String(), "hello") {
+		t.Fatalf("buf = %q", buf.String())
+	}
+	SetOutput(nil) // back to stdout, buf must stop receiving
+	n := buf.Len()
+	Log(context.Background(), LevelInfo, "elsewhere")
+	if buf.Len() != n {
+		t.Fatal("output still written to the old writer")
+	}
+}
+
+func TestInvalidLogFormatWarns(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*testing.T)
+	}{
+		{"env", func(t *testing.T) { t.Setenv("LOG_FORMAT", "yaml") }},
+		{"SetFormat", func(t *testing.T) { SetFormat("yaml") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetState(t)
+			t.Setenv("LOG_LEVEL", "info")
+			var buf bytes.Buffer
+			if tc.name == "env" {
+				tc.set(t)
+				SetOutput(&buf)
+			} else {
+				SetOutput(&buf)
+				tc.set(t)
+			}
+			Log(context.Background(), LevelInfo, "after")
+			out := buf.String()
+			if strings.Count(out, "unrecognized") != 1 || !strings.Contains(out, "yaml") || !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"msg":"after"`) {
+				t.Fatalf("unexpected output %q", out)
+			}
+		})
+	}
+}
+
+func TestValidLogFormatDoesNotWarn(t *testing.T) {
+	for _, f := range []string{"", "json", " TEXT ", "string"} {
+		resetState(t)
+		t.Setenv("LOG_FORMAT", f)
+		var buf bytes.Buffer
+		SetOutput(&buf)
+		Log(context.Background(), LevelInfo, "x")
+		if strings.Contains(buf.String(), "LOG_FORMAT") {
+			t.Errorf("format %q warned: %q", f, buf.String())
+		}
+	}
+}
+
+func TestEmptyLogLevelIsUnset(t *testing.T) {
+	for _, v := range []string{"", "   "} {
+		resetState(t)
+		t.Setenv("LOG_LEVEL", v)
+		var buf bytes.Buffer
+		SetOutput(&buf)
+		if got := GetLevel(); got != LevelInfo {
+			t.Fatalf("LOG_LEVEL=%q: level %v, want info", v, got)
+		}
+		if buf.Len() != 0 {
+			t.Fatalf("LOG_LEVEL=%q warned: %q", v, buf.String())
+		}
+	}
+}
+
+func TestSetLevelIgnoresInvalidValues(t *testing.T) {
+	resetState(t)
+	SetLevel(LevelError)
+	for _, bad := range []Level{-9, -1, 1, 3, 100} {
+		SetLevel(bad)
+		if got := GetLevel(); got != LevelError {
+			t.Fatalf("SetLevel(%d) changed level to %v", int(bad), got)
+		}
 	}
 }
