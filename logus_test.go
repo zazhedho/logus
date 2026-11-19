@@ -141,7 +141,7 @@ func (c *capture) last(t *testing.T) map[string]any {
 	return m
 }
 
-// TestConcurrentWritesThroughPublicAPI checks that parallel WriteLog calls
+// TestConcurrentWritesThroughPublicAPI checks that parallel Log calls
 // each produce one whole JSON line.
 func TestConcurrentWritesThroughPublicAPI(t *testing.T) {
 	buf := captureLogs(t)
@@ -546,8 +546,8 @@ func TestRequestIDReadsFromAnyKeyContext(t *testing.T) {
 	}
 }
 
-// // helperEnv selects a child-process mode: LOG_LEVEL and LOG_FORMAT are read once
-// // per process, so such tests re-run the binary and inspect its stdout.
+// helperEnv selects a child-process mode: LOG_LEVEL and LOG_FORMAT are read once
+// per process, so such tests re-run the binary and inspect its stdout.
 const helperEnv = "LOGUS_TEST_HELPER"
 
 type levelCase struct {

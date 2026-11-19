@@ -62,10 +62,9 @@ func SetOutput(w io.Writer) {
 	core.SetOutput(w)
 }
 
-// SetFormat selects the output format: "json", "text" or "string",
-// case-insensitive. An empty name means json; an unknown one falls back to json
-// and writes one warning. Called before the first log it takes precedence over
-// LOG_FORMAT.
+// SetFormat selects "json", "text" or "string" (case-insensitive); empty means
+// json and an unknown name falls back to json with one warning. Called before
+// the first log it takes precedence over LOG_FORMAT.
 func SetFormat(format string) {
 	core.SetFormat(format)
 }
