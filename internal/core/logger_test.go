@@ -78,3 +78,16 @@ func TestConcurrentWritesProduceWholeLines(t *testing.T) {
 		})
 	}
 }
+
+func TestControlCharactersAreEscapedInEveryFormat(t *testing.T) {
+	for _, format := range []string{"json", "text", "string"} {
+		t.Run(format, func(t *testing.T) {
+			buf := captureLogs(t, format)
+			Log(context.Background(), LevelInfo, "one\ntwo\r\nthree\x1b[0m")
+			out := buf.String()
+			if strings.Count(out, "\n") != 1 || strings.ContainsAny(strings.TrimSuffix(out, "\n"), "\r\x1b") {
+				t.Fatalf("unsafe output %q", out)
+			}
+		})
+	}
+}
