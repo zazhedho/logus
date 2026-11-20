@@ -222,26 +222,28 @@ func FuzzEscapeControl(f *testing.F) {
 	for _, seed := range []string{"", "plain", "a\nb", `a\nb`, "\r\n", "\x00\x1b[31m", "\u2028\u202e\u200b", "bad\xff\xfe", `\\`, "tag\U000E0001"} {
 		f.Add(seed)
 	}
-	f.Fuzz(func(t *testing.T, in string) {
-		out := escapeControl(in)
-		if !utf8.ValidString(out) {
-			t.Fatalf("invalid UTF-8 output for %q: %q", in, out)
+	f.Fuzz(checkEscapeControl)
+}
+
+func checkEscapeControl(t *testing.T, in string) {
+	out := escapeControl(in)
+	if !utf8.ValidString(out) {
+		t.Fatalf("invalid UTF-8 output for %q: %q", in, out)
+	}
+	for _, r := range out {
+		if isEscapable(r) && r != '\\' {
+			t.Fatalf("output %q for input %q contains escapable rune %U", out, in, r)
 		}
-		for _, r := range out {
-			if isEscapable(r) && r != '\\' {
-				t.Fatalf("output %q for input %q contains escapable rune %U", out, in, r)
-			}
-		}
-		if strings.ContainsAny(out, "\n\r") {
-			t.Fatalf("raw newline in %q", out)
-		}
-		// Lossless: the escaping can be undone exactly.
-		if back, ok := unescape(out); !ok || back != asValidRunes(in) {
-			t.Fatalf("not lossless: %q -> %q -> %q", in, out, back)
-		}
-		// Input with nothing to escape passes through unchanged.
-		if !strings.ContainsFunc(in, isEscapable) && utf8.ValidString(in) && out != in {
-			t.Fatalf("clean input %q changed to %q", in, out)
-		}
-	})
+	}
+	if strings.ContainsAny(out, "\n\r") {
+		t.Fatalf("raw newline in %q", out)
+	}
+	// Lossless: the escaping can be undone exactly.
+	if back, ok := unescape(out); !ok || back != asValidRunes(in) {
+		t.Fatalf("not lossless: %q -> %q -> %q", in, out, back)
+	}
+	// Input with nothing to escape passes through unchanged.
+	if !strings.ContainsFunc(in, isEscapable) && utf8.ValidString(in) && out != in {
+		t.Fatalf("clean input %q changed to %q", in, out)
+	}
 }
