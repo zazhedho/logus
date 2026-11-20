@@ -113,7 +113,9 @@ func SetLevel(l Level) {
 	if !l.valid() {
 		return
 	}
-	levelOnce.Do(func() {})
+	levelOnce.Do(func() {
+		// Mark the LOG_LEVEL read as done so this explicit level wins.
+	})
 	levelVar.Set(slog.Level(l))
 }
 
