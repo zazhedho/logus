@@ -49,6 +49,19 @@ func TestNewLoggerSelectsFormat(t *testing.T) {
 	}
 }
 
+// requireWholeLine fails the test when line is not one complete record.
+func requireWholeLine(t *testing.T, format, line string) {
+	t.Helper()
+	if format == "json" {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("torn line %q: %v", line, err)
+		}
+	} else if !strings.HasSuffix(line, " complete-message") {
+		t.Fatalf("torn line %q", line)
+	}
+}
+
 func TestConcurrentWritesProduceWholeLines(t *testing.T) {
 	for _, format := range []string{"json", "string"} {
 		t.Run(format, func(t *testing.T) {
@@ -69,14 +82,7 @@ func TestConcurrentWritesProduceWholeLines(t *testing.T) {
 				t.Fatalf("lines = %d, want 1000", len(lines))
 			}
 			for _, line := range lines {
-				if format == "json" {
-					var m map[string]any
-					if err := json.Unmarshal([]byte(line), &m); err != nil {
-						t.Fatalf("torn line %q: %v", line, err)
-					}
-				} else if !strings.HasSuffix(line, " complete-message") {
-					t.Fatalf("torn line %q", line)
-				}
+				requireWholeLine(t, format, line)
 			}
 		})
 	}

@@ -88,7 +88,7 @@ func (f *fakeAnyKeyContext) Get(key any) (any, bool) {
 	return v, ok
 }
 
-func (f *fakeAnyKeyContext) Set(key any, value any) {
+func (f *fakeAnyKeyContext) Set(key, value any) {
 	f.values[key] = value
 }
 
@@ -221,7 +221,7 @@ func TestUserIDHelpers(t *testing.T) {
 	if got := logus.UserID(nil); got != "" { //nolint:staticcheck // nil context is supported
 		t.Fatalf("UserID(nil) = %q", got)
 	}
-	if ctx := logus.WithUserID(nil, "x"); ctx == nil { //nolint:staticcheck // nil context is supported
+	if logus.WithUserID(nil, "x") == nil { //nolint:staticcheck // nil context is supported
 		t.Fatal("WithUserID(nil) returned nil")
 	}
 	f := newFakeGinContext()
@@ -252,6 +252,18 @@ func TestLevelAndCtxKeysAreAliasesOfCore(t *testing.T) {
 	}
 }
 
+// checkOptionalField requires key to equal *want, or to be absent when want is nil.
+func checkOptionalField(t *testing.T, m map[string]any, key string, want *string) {
+	t.Helper()
+	got, present := m[key]
+	if want == nil && present {
+		t.Errorf("%s present (%v), want omitted", key, got)
+	}
+	if want != nil && got != *want {
+		t.Errorf("%s = %v, want %q", key, got, *want)
+	}
+}
+
 func TestServerIPAndNodeFields(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -274,13 +286,7 @@ func TestServerIPAndNodeFields(t *testing.T) {
 				t.Fatal(err)
 			}
 			for key, want := range map[string]*string{"server_ip": c.wantIP, "node": c.node} {
-				got, present := m[key]
-				if want == nil && present {
-					t.Errorf("%s present (%v), want omitted", key, got)
-				}
-				if want != nil && got != *want {
-					t.Errorf("%s = %v, want %q", key, got, *want)
-				}
+				checkOptionalField(t, m, key, want)
 			}
 		})
 	}
@@ -492,14 +498,14 @@ func TestRequestIDPlainContextGeneratesEachCall(t *testing.T) {
 
 func TestRequestIDNilContext(t *testing.T) {
 	//nolint:staticcheck // nil context is deliberately tolerated
-	if got := logus.RequestID(nil); got == uuid.Nil {
+	if logus.RequestID(nil) == uuid.Nil {
 		t.Fatal("expected generated id")
 	}
 }
 
 func TestRequestIDTreatsStoredNilUUIDAsMissing(t *testing.T) {
 	t.Run("typed context value", func(t *testing.T) {
-		if got := logus.RequestID(logus.WithRequestID(context.Background(), uuid.Nil)); got == uuid.Nil {
+		if logus.RequestID(logus.WithRequestID(context.Background(), uuid.Nil)) == uuid.Nil {
 			t.Fatal("expected generated id")
 		}
 	})
@@ -667,10 +673,10 @@ func warnings(msgs []string) int {
 	return n
 }
 
-// namesFrom lists the level names at or above the first one named min.
-func namesFrom(min string) []string {
+// namesFrom lists the level names at or above the first one named from.
+func namesFrom(from string) []string {
 	for i, lc := range allLevels {
-		if lc.name == min {
+		if lc.name == from {
 			var out []string
 			for _, l := range allLevels[i:] {
 				out = append(out, l.name)
@@ -711,6 +717,18 @@ func TestPublicLevelValuesAlignWithSlogAndCore(t *testing.T) {
 
 var offsetForm = regexp.MustCompile(`[A-Z][+-]\d`)
 
+// namesLevel reports whether line spells the level name the way format does.
+func namesLevel(format, line, name string) bool {
+	switch format {
+	case "json":
+		return strings.Contains(line, `"level":"`+name+`"`)
+	case "text":
+		return strings.Contains(line, "level="+name+" ")
+	default:
+		return strings.Contains(line, "]["+name+"]")
+	}
+}
+
 func TestEveryLevelAppearsByNameInAllFormats(t *testing.T) {
 	for _, format := range []string{"json", "text", "string"} {
 		t.Run(format, func(t *testing.T) {
@@ -724,16 +742,7 @@ func TestEveryLevelAppearsByNameInAllFormats(t *testing.T) {
 				if offsetForm.MatchString(line) {
 					t.Errorf("%s: offset-form level in %q", lc.name, line)
 				}
-				var ok bool
-				switch format {
-				case "json":
-					ok = strings.Contains(line, `"level":"`+lc.name+`"`)
-				case "text":
-					ok = strings.Contains(line, "level="+lc.name+" ")
-				default:
-					ok = strings.Contains(line, "]["+lc.name+"]")
-				}
-				if !ok {
+				if !namesLevel(format, line, lc.name) {
 					t.Errorf("%s not named in %s line %q", lc.name, format, line)
 				}
 			}

@@ -20,7 +20,7 @@ type (
 	stringKeyGetter interface{ Get(key string) (any, bool) }
 	anyKeyGetter    interface{ Get(key any) (any, bool) }
 	stringKeySetter interface{ Set(key string, value any) }
-	anyKeySetter    interface{ Set(key any, value any) }
+	anyKeySetter    interface{ Set(key, value any) }
 )
 
 // ctxGet reads key through a Get method of either signature family.

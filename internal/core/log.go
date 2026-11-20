@@ -95,15 +95,12 @@ func emit(ctx context.Context, level Level, msg string) {
 			attrs = append(attrs, slog.String("user_id", userID))
 		}
 	}
-	logCtx := ctx
-	if logCtx == nil {
-		logCtx = context.Background()
-	}
 	fields := make([]any, 0, len(attrs))
 	for _, attr := range attrs {
 		fields = append(fields, attr)
 	}
-	getLogger().Log(logCtx, slog.Level(level), msg, fields...)
+	// slog substitutes context.Background for a nil ctx.
+	getLogger().Log(ctx, slog.Level(level), msg, fields...)
 }
 
 func callerAttrs(skip int, wd string) []slog.Attr {
